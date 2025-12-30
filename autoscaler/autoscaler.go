@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"eks-nodescheduler/config"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
@@ -19,17 +20,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-type Config struct {
-	ClusterName     string   `yaml:"clusterName"`
-	HighThreshold   int      `yaml:"highThreshold"`
-	LowThreshold    int      `yaml:"lowThreshold"`
-	MaxThreshold    int      `yaml:"maxThreshold"`
-	CooldownSeconds int      `yaml:"cooldownSeconds"`
-	NodeGroups      []string `yaml:"nodeGroups"`
-}
-
 type Autoscaler struct {
-	config        Config
+	config        config.Config
 	k8sClient     kubernetes.Interface
 	eksClient     *eks.Client
 	ec2Client     *ec2.Client
@@ -39,7 +31,7 @@ type Autoscaler struct {
 }
 
 func NewAutoscaler(
-	config Config,
+	config config.Config,
 	k8sClient kubernetes.Interface,
 	eksClient *eks.Client,
 	ec2Client *ec2.Client,
