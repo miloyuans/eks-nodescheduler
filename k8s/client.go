@@ -1,3 +1,4 @@
+// k8s/client.go (unchanged, but ensure proper context usage in calls)
 package k8s
 
 import (
