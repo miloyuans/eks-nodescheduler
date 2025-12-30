@@ -76,11 +76,11 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 			continue
 		}
 
-		// 获取关联的 ASG 名称
+		// 获取关联的 ASG 名称 —— 关键修复点
 		asgName := ""
 		if ng.Resources != nil && len(ng.Resources.AutoScalingGroups) > 0 {
 			firstASG := ng.Resources.AutoScalingGroups[0]
-			if firstASG != nil && firstASG.Name != nil {
+			if firstASG != nil && firstASG.Name != nil { // firstASG 是 *types.AutoScalingGroup，可以与 nil 比较
 				asgName = *firstASG.Name
 			}
 		}
@@ -117,7 +117,6 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 		// Scale down
 		if avgUtil < float64(a.config.LowThreshold)/100 &&
 			ng.ScalingConfig.DesiredSize != nil &&
-			ng.ScalingConfig.MinSize != nil &&
 			*ng.ScalingConfig.DesiredSize > *ng.ScalingConfig.MinSize {
 
 			if time.Since(a.lastScaleDown[ngName]) < time.Duration(a.config.CooldownSeconds)*time.Second {
@@ -279,7 +278,6 @@ func (a *Autoscaler) drainNode(ctx context.Context, node *v1.Node) {
 		return
 	}
 
-	// Cordon
 	nodeCopy := node.DeepCopy()
 	nodeCopy.Spec.Unschedulable = true
 	_, err := a.k8sClient.CoreV1().Nodes().Update(ctx, nodeCopy, metav1.UpdateOptions{})
@@ -288,7 +286,6 @@ func (a *Autoscaler) drainNode(ctx context.Context, node *v1.Node) {
 		return
 	}
 
-	// Evict pods
 	pods, err := a.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + node.Name,
 	})
@@ -313,7 +310,6 @@ func (a *Autoscaler) drainNode(ctx context.Context, node *v1.Node) {
 		}
 	}
 
-	// 轮询等待非 DaemonSet pod 清空
 	timeout := time.NewTimer(5 * time.Minute)
 	ticker := time.NewTicker(10 * time.Second)
 	defer timeout.Stop()
