@@ -79,8 +79,8 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 		// 获取关联的 ASG 名称 —— 关键修复点
 		asgName := ""
 		if ng.Resources != nil && len(ng.Resources.AutoScalingGroups) > 0 {
-			firstASG := ng.Resources.AutoScalingGroups[0]
-			if firstASG != nil && firstASG.Name != nil { // firstASG 是 *types.AutoScalingGroup，可以与 nil 比较
+			firstASG := ng.Resources.AutoScalingGroups[0]  // 保持为指针
+			if firstASG != nil && firstASG.Name != nil {
 				asgName = *firstASG.Name
 			}
 		}
