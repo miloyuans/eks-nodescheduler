@@ -70,18 +70,18 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 		if ng == nil || ng.NodegroupName == nil {
 			continue
 		}
-		ngName := aws.StringValue(ng.NodegroupName)
+		ngName := *ng.NodegroupName
 
 		if len(a.config.NodeGroups) > 0 && !contains(a.config.NodeGroups, ngName) {
 			continue
 		}
 
-		// 获取关联的 ASG 名称（安全方式）
+		// 获取关联的 ASG 名称
 		asgName := ""
 		if ng.Resources != nil && len(ng.Resources.AutoScalingGroups) > 0 {
 			firstASG := ng.Resources.AutoScalingGroups[0]
 			if firstASG != nil && firstASG.Name != nil {
-				asgName = aws.StringValue(firstASG.Name)
+				asgName = *firstASG.Name
 			}
 		}
 		if asgName == "" {
@@ -97,7 +97,7 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 
 		if ng.ScalingConfig == nil ||
 			ng.ScalingConfig.MinSize == nil ||
-			len(nodes) <= int(aws.Int32Value(ng.ScalingConfig.MinSize)) {
+			len(nodes) <= int(*ng.ScalingConfig.MinSize) {
 			continue
 		}
 
@@ -118,7 +118,7 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 		if avgUtil < float64(a.config.LowThreshold)/100 &&
 			ng.ScalingConfig.DesiredSize != nil &&
 			ng.ScalingConfig.MinSize != nil &&
-			aws.Int32Value(ng.ScalingConfig.DesiredSize) > aws.Int32Value(ng.ScalingConfig.MinSize) {
+			*ng.ScalingConfig.DesiredSize > *ng.ScalingConfig.MinSize {
 
 			if time.Since(a.lastScaleDown[ngName]) < time.Duration(a.config.CooldownSeconds)*time.Second {
 				continue
@@ -171,9 +171,9 @@ func (a *Autoscaler) getNodesInGroup(ctx context.Context, ngName string) ([]*v1.
 	if err != nil {
 		return nil, err
 	}
-	nodes := make([]*v1.Node, 0, len(list.Items))
+	nodes := make([]*v1.Node, len(list.Items))
 	for i := range list.Items {
-		nodes = append(nodes, &list.Items[i])
+		nodes[i] = &list.Items[i]
 	}
 	return nodes, nil
 }
@@ -313,7 +313,7 @@ func (a *Autoscaler) drainNode(ctx context.Context, node *v1.Node) {
 		}
 	}
 
-	// 轮询等待
+	// 轮询等待非 DaemonSet pod 清空
 	timeout := time.NewTimer(5 * time.Minute)
 	ticker := time.NewTicker(10 * time.Second)
 	defer timeout.Stop()
@@ -376,23 +376,23 @@ func (a *Autoscaler) terminateSpecificInstance(ctx context.Context, asgName, ins
 }
 
 func (a *Autoscaler) scaleUp(ctx context.Context, ng *types.Nodegroup) {
-	if ng.ScalingConfig == nil ||
+	if ng == nil || ng.ScalingConfig == nil ||
 		ng.ScalingConfig.DesiredSize == nil ||
-		ng.ScalingConfig.MaxSize == nil {
-		log.Printf("Scaling config missing for nodegroup %s", aws.StringValue(ng.NodegroupName))
+		ng.ScalingConfig.MaxSize == nil ||
+		ng.NodegroupName == nil {
 		return
 	}
 
-	currentDesired := aws.Int32Value(ng.ScalingConfig.DesiredSize)
+	currentDesired := *ng.ScalingConfig.DesiredSize
 	newDesired := currentDesired + 1
 
-	if newDesired > aws.Int32Value(ng.ScalingConfig.MaxSize) {
-		log.Printf("Scale up would exceed MaxSize for %s", aws.StringValue(ng.NodegroupName))
+	if newDesired > *ng.ScalingConfig.MaxSize {
+		log.Printf("Scale up would exceed MaxSize for %s", *ng.NodegroupName)
 		return
 	}
 
 	if a.dryRun {
-		log.Printf("Dry-run: Would scale up %s to %d", aws.StringValue(ng.NodegroupName), newDesired)
+		log.Printf("Dry-run: Would scale up %s to %d", *ng.NodegroupName, newDesired)
 		return
 	}
 
@@ -408,10 +408,10 @@ func (a *Autoscaler) scaleUp(ctx context.Context, ng *types.Nodegroup) {
 
 	_, err := a.eksClient.UpdateNodegroupConfig(ctx, input)
 	if err != nil {
-		log.Printf("Failed to scale up %s: %v", aws.StringValue(ng.NodegroupName), err)
+		log.Printf("Failed to scale up %s: %v", *ng.NodegroupName, err)
 		return
 	}
-	log.Printf("Scaled up %s to %d", aws.StringValue(ng.NodegroupName), newDesired)
+	log.Printf("Scaled up %s to %d", *ng.NodegroupName, newDesired)
 }
 
 func contains(slice []string, item string) bool {
