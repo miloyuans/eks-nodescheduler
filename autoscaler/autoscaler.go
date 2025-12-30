@@ -4,7 +4,6 @@ package autoscaler
 import (
 	"context"
 	"log"
-	"path"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"k8s.io/api/core/v1"
 	policyv1beta1 "k8s.io/api/policy/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -66,9 +66,10 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 		}
 
 		asgName := ""
-		if len(ng.Resources.AutoScalingGroups) > 0 {
+		if ng.Resources != nil && len(ng.Resources.AutoScalingGroups) > 0 && ng.Resources.AutoScalingGroups[0].Name != nil {
 			asgName = *ng.Resources.AutoScalingGroups[0].Name
-		} else {
+		}
+		if asgName == "" {
 			log.Printf("No ASG found for nodegroup %s", ngName)
 			continue
 		}
@@ -78,7 +79,7 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 			log.Printf("Failed to get nodes for %s: %v", ngName, err)
 			continue
 		}
-		if len(nodes) <= int(*ng.ScalingConfig.MinSize) {
+		if ng.ScalingConfig == nil || len(nodes) <= int(*ng.ScalingConfig.MinSize) {
 			continue
 		}
 
@@ -111,14 +112,14 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 	}
 }
 
-func (a *Autoscaler) getNodeGroups(ctx context.Context) ([]*eks.Nodegroup, error) {
+func (a *Autoscaler) getNodeGroups(ctx context.Context) ([]*types.Nodegroup, error) {
 	input := &eks.ListNodegroupsInput{ClusterName: aws.String(a.config.ClusterName)}
 	output, err := a.eksClient.ListNodegroups(ctx, input)
 	if err != nil {
 		return nil, err
 	}
 
-	var groups []*eks.Nodegroup
+	var groups []*types.Nodegroup
 	for _, name := range output.Nodegroups {
 		descInput := &eks.DescribeNodegroupInput{
 			ClusterName:   aws.String(a.config.ClusterName),
@@ -334,7 +335,7 @@ func (a *Autoscaler) terminateSpecificInstance(ctx context.Context, asgName, ins
 	log.Printf("Terminated instance %s in ASG %s and decremented desired", instanceID, asgName)
 }
 
-func (a *Autoscaler) scaleUp(ctx context.Context, ng *eks.Nodegroup) {
+func (a *Autoscaler) scaleUp(ctx context.Context, ng *types.Nodegroup) {
 	newDesired := *ng.ScalingConfig.DesiredSize + 1
 	if newDesired > *ng.ScalingConfig.MaxSize {
 		log.Printf("Scale up out of bounds for %s", *ng.NodegroupName)
@@ -349,7 +350,7 @@ func (a *Autoscaler) scaleUp(ctx context.Context, ng *eks.Nodegroup) {
 	input := &eks.UpdateNodegroupConfigInput{
 		ClusterName:   aws.String(a.config.ClusterName),
 		NodegroupName: ng.NodegroupName,
-		ScalingConfig: &eks.NodegroupScalingConfig{
+		ScalingConfig: &types.NodegroupScalingConfig{
 			DesiredSize: aws.Int64(newDesired),
 		},
 	}
