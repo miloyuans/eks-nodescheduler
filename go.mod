@@ -1,12 +1,35 @@
-module eks-nodescheduler
+// awsclients/clients.go
+package awsclients
 
-go 1.22
+import (
+	"context"
 
-require (
-	github.com/aws/aws-sdk-go-v2/config v1.27.11
-	github.com/aws/aws-sdk-go-v2/service/eks v1.44.0
-	k8s.io/api v0.30.0
-	k8s.io/apimachinery v0.30.0
-	k8s.io/client-go v0.30.0
-	github.com/spf13/cobra v1.8.0
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
 )
+
+func NewEKSClient() (*eks.Client, error) {
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		return nil, err
+	}
+	return eks.NewFromConfig(cfg), nil
+}
+
+func NewEC2Client() (*ec2.Client, error) {
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		return nil, err
+	}
+	return ec2.NewFromConfig(cfg), nil
+}
+
+func NewASGClient() (*autoscaling.Client, error) {
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		return nil, err
+	}
+	return autoscaling.NewFromConfig(cfg), nil
+}

@@ -1,5 +1,5 @@
-// aws/eks.go (renamed and expanded)
-package aws
+// awsclients/clients.go
+package awsclients
 
 import (
 	"context"

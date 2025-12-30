@@ -6,15 +6,15 @@ import (
 	"flag"
 	"log"
 
-	"autoscaler/aws"
-	"autoscaler/autoscaler"
-	"autoscaler/config"
-	"autoscaler/k8s"
+	"eks-nodescheduler/autoscaler"
+	"eks-nodescheduler/awsclients"
+	"eks-nodescheduler/config"
+	"eks-nodescheduler/k8s"
 )
 
 func main() {
-	configFile := flag.String("config", "config.yaml", "config file")
-	dryRun := flag.Bool("dry-run", true, "dry run mode")
+	configFile := flag.String("config", "config.yaml", "Path to config file")
+	dryRun := flag.Bool("dry-run", true, "Enable dry-run mode")
 	flag.Parse()
 
 	cfg, err := config.LoadConfig(*configFile)
@@ -27,19 +27,19 @@ func main() {
 		log.Fatalf("Failed to create Kubernetes client: %v", err)
 	}
 
-	eksClient, err := aws.NewEKSClient()
+	eksClient, err := awsclients.NewEKSClient()
 	if err != nil {
 		log.Fatalf("Failed to create EKS client: %v", err)
 	}
 
-	ec2Client, err := aws.NewEC2Client()
+	ec2Client, err := awsclients.NewEC2Client()
 	if err != nil {
 		log.Fatalf("Failed to create EC2 client: %v", err)
 	}
 
-	asgClient, err := aws.NewASGClient()
+	asgClient, err := awsclients.NewASGClient()
 	if err != nil {
-		log.Fatalf("Failed to create ASG client: %v", err)
+		log.Fatalf("Failed to create AutoScaling client: %v", err)
 	}
 
 	as := autoscaler.NewAutoscaler(cfg, k8sClient, eksClient, ec2Client, asgClient, *dryRun)
