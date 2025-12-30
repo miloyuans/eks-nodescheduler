@@ -38,7 +38,14 @@ type Autoscaler struct {
 	lastScaleDown map[string]time.Time
 }
 
-func NewAutoscaler(config Config, k8sClient kubernetes.Interface, eksClient *eks.Client, ec2Client *ec2.Client, asgClient *autoscaling.Client, dryRun bool) *Autoscaler {
+func NewAutoscaler(
+	config Config,
+	k8sClient kubernetes.Interface,
+	eksClient *eks.Client,
+	ec2Client *ec2.Client,
+	asgClient *autoscaling.Client,
+	dryRun bool,
+) *Autoscaler {
 	return &Autoscaler{
 		config:        config,
 		k8sClient:     k8sClient,
@@ -60,13 +67,19 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 	}
 
 	for _, ng := range nodegroups {
+		if ng == nil || ng.NodegroupName == nil {
+			continue
+		}
 		ngName := *ng.NodegroupName
+
 		if len(a.config.NodeGroups) > 0 && !contains(a.config.NodeGroups, ngName) {
 			continue
 		}
 
+		// 获取关联的 ASG 名称
 		asgName := ""
-		if ng.Resources != nil && len(ng.Resources.AutoScalingGroups) > 0 && ng.Resources.AutoScalingGroups[0].Name != nil {
+		if ng.Resources != nil && len(ng.Resources.AutoScalingGroups) > 0 &&
+			ng.Resources.AutoScalingGroups[0] != nil && ng.Resources.AutoScalingGroups[0].Name != nil {
 			asgName = *ng.Resources.AutoScalingGroups[0].Name
 		}
 		if asgName == "" {
@@ -79,7 +92,10 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 			log.Printf("Failed to get nodes for %s: %v", ngName, err)
 			continue
 		}
-		if ng.ScalingConfig == nil || len(nodes) <= int(*ng.ScalingConfig.MinSize) {
+
+		if ng.ScalingConfig == nil ||
+			ng.ScalingConfig.MinSize == nil ||
+			len(nodes) <= int(*ng.ScalingConfig.MinSize) {
 			continue
 		}
 
@@ -90,12 +106,18 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 			continue
 		}
 
+		// Scale up
 		if avgUtil > float64(a.config.HighThreshold)/100 {
 			a.scaleUp(ctx, ng)
 			continue
 		}
 
-		if avgUtil < float64(a.config.LowThreshold)/100 && *ng.ScalingConfig.DesiredSize > *ng.ScalingConfig.MinSize {
+		// Scale down
+		if avgUtil < float64(a.config.LowThreshold)/100 &&
+			ng.ScalingConfig.DesiredSize != nil &&
+			ng.ScalingConfig.MinSize != nil &&
+			*ng.ScalingConfig.DesiredSize > *ng.ScalingConfig.MinSize {
+
 			if time.Since(a.lastScaleDown[ngName]) < time.Duration(a.config.CooldownSeconds)*time.Second {
 				continue
 			}
@@ -113,7 +135,9 @@ func (a *Autoscaler) RunOnce(ctx context.Context) {
 }
 
 func (a *Autoscaler) getNodeGroups(ctx context.Context) ([]*types.Nodegroup, error) {
-	input := &eks.ListNodegroupsInput{ClusterName: aws.String(a.config.ClusterName)}
+	input := &eks.ListNodegroupsInput{
+		ClusterName: aws.String(a.config.ClusterName),
+	}
 	output, err := a.eksClient.ListNodegroups(ctx, input)
 	if err != nil {
 		return nil, err
@@ -130,20 +154,24 @@ func (a *Autoscaler) getNodeGroups(ctx context.Context) ([]*types.Nodegroup, err
 			log.Printf("Failed to describe nodegroup %s: %v", name, err)
 			continue
 		}
-		groups = append(groups, descOutput.Nodegroup)
+		if descOutput.Nodegroup != nil {
+			groups = append(groups, descOutput.Nodegroup)
+		}
 	}
 	return groups, nil
 }
 
 func (a *Autoscaler) getNodesInGroup(ctx context.Context, ngName string) ([]*v1.Node, error) {
 	selector := labels.SelectorFromSet(labels.Set{"eks.amazonaws.com/nodegroup": ngName})
-	nodesList, err := a.k8sClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	list, err := a.k8sClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+		LabelSelector: selector.String(),
+	})
 	if err != nil {
 		return nil, err
 	}
-	var nodes []*v1.Node
-	for i := range nodesList.Items {
-		nodes = append(nodes, &nodesList.Items[i])
+	nodes := make([]*v1.Node, 0, len(list.Items))
+	for i := range list.Items {
+		nodes = append(nodes, &list.Items[i])
 	}
 	return nodes, nil
 }
@@ -151,22 +179,30 @@ func (a *Autoscaler) getNodesInGroup(ctx context.Context, ngName string) ([]*v1.
 func (a *Autoscaler) calculateUtilization(ctx context.Context, nodes []*v1.Node) (float64, map[string]float64) {
 	var total float64
 	utils := make(map[string]float64)
+
 	for _, n := range nodes {
-		pods, _ := a.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + n.Name})
-		util := 0.0
+		pods, _ := a.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+			FieldSelector: "spec.nodeName=" + n.Name,
+		})
+
 		alloc := n.Status.Allocatable.Cpu().MilliValue()
-		if alloc > 0 {
-			var req int64
-			for _, pod := range pods.Items {
-				for _, c := range pod.Spec.Containers {
-					req += c.Resources.Requests.Cpu().MilliValue()
-				}
-			}
-			util = float64(req) / float64(alloc)
+		if alloc == 0 {
+			utils[n.Name] = 0.0
+			continue
 		}
+
+		var req int64
+		for _, pod := range pods.Items {
+			for _, c := range pod.Spec.Containers {
+				req += c.Resources.Requests.Cpu().MilliValue()
+			}
+		}
+
+		util := float64(req) / float64(alloc)
 		utils[n.Name] = util
 		total += util
 	}
+
 	avg := 0.0
 	if len(nodes) > 0 {
 		avg = total / float64(len(nodes))
@@ -178,7 +214,7 @@ func (a *Autoscaler) isImbalanced(nodeUtils map[string]float64, avgUtil float64)
 	hasLow := false
 	for _, u := range nodeUtils {
 		if u > float64(a.config.MaxThreshold)/100 {
-			return false
+			return false // 有节点过载，不允许下缩
 		}
 		if u < avgUtil {
 			hasLow = true
@@ -190,48 +226,45 @@ func (a *Autoscaler) isImbalanced(nodeUtils map[string]float64, avgUtil float64)
 func (a *Autoscaler) selectLowUtilNode(ctx context.Context, nodeUtils map[string]float64, avgUtil float64) *v1.Node {
 	var candidate *v1.Node
 	minUtil := 1.0
+
 	for name, u := range nodeUtils {
 		if u < avgUtil && u < minUtil {
 			minUtil = u
-			n, err := a.k8sClient.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+			node, err := a.k8sClient.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
 				continue
 			}
-			candidate = n
+			candidate = node
 		}
 	}
 	return candidate
 }
 
 func (a *Autoscaler) simulateRemoval(nodes []*v1.Node, remove *v1.Node) bool {
-	totalReq := int64(0)
+	var totalReq int64
 	for _, n := range nodes {
-		alloc := n.Status.Allocatable.Cpu().MilliValue()
-		util := 0.0 // We can recompute, but optimize by passing from earlier
-		pods, _ := a.k8sClient.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{FieldSelector: "spec.nodeName=" + n.Name})
-		var req int64
+		pods, _ := a.k8sClient.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{
+			FieldSelector: "spec.nodeName=" + n.Name,
+		})
 		for _, pod := range pods.Items {
 			for _, c := range pod.Spec.Containers {
-				req += c.Resources.Requests.Cpu().MilliValue()
+				totalReq += c.Resources.Requests.Cpu().MilliValue()
 			}
 		}
-		totalReq += req
-		util = float64(req) / float64(alloc) // Not needed here
-		_ = util
 	}
 
 	remaining := len(nodes) - 1
 	if remaining == 0 {
 		return false
 	}
-	avgReq := totalReq / int64(remaining)
+	avgReqPerNode := totalReq / int64(remaining)
 
 	for _, n := range nodes {
 		if n.Name == remove.Name {
 			continue
 		}
 		alloc := n.Status.Allocatable.Cpu().MilliValue()
-		if float64(avgReq)/float64(alloc) > float64(a.config.MaxThreshold)/100 {
+		if alloc > 0 && float64(avgReqPerNode)/float64(alloc) > float64(a.config.MaxThreshold)/100 {
 			return false
 		}
 	}
@@ -244,7 +277,7 @@ func (a *Autoscaler) drainNode(ctx context.Context, node *v1.Node) {
 		return
 	}
 
-	// Cordon the node
+	// Cordon
 	nodeCopy := node.DeepCopy()
 	nodeCopy.Spec.Unschedulable = true
 	_, err := a.k8sClient.CoreV1().Nodes().Update(ctx, nodeCopy, metav1.UpdateOptions{})
@@ -254,13 +287,17 @@ func (a *Autoscaler) drainNode(ctx context.Context, node *v1.Node) {
 	}
 
 	// Evict pods
-	pods, err := a.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + node.Name})
+	pods, err := a.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + node.Name,
+	})
 	if err != nil {
 		log.Printf("Failed to list pods on node %s: %v", node.Name, err)
 		return
 	}
+
 	for _, pod := range pods.Items {
-		if pod.Namespace == "" || strings.HasPrefix(pod.Name, "kube-") { // Skip system pods if needed
+		// 跳过系统命名空间或 DaemonSet 管理的 pod（可选）
+		if pod.Namespace == "kube-system" {
 			continue
 		}
 		eviction := &policyv1beta1.Eviction{
@@ -269,40 +306,42 @@ func (a *Autoscaler) drainNode(ctx context.Context, node *v1.Node) {
 				Namespace: pod.Namespace,
 			},
 		}
-		err := a.k8sClient.CoreV1().Pods(pod.Namespace).Evict(ctx, eviction)
+		err := a.k8sClient.PolicyV1beta1().Evictions(pod.Namespace).Evict(ctx, eviction)
 		if err != nil {
 			log.Printf("Failed to evict pod %s/%s: %v", pod.Namespace, pod.Name, err)
 		}
 	}
 
-	// Poll until no non-DaemonSet pods remain
-	timeout := time.After(5 * time.Minute)
-	tick := time.Tick(10 * time.Second)
+	// 简单轮询等待非 DaemonSet pod 消失
+	timeout := time.NewTimer(5 * time.Minute)
+	ticker := time.NewTicker(10 * time.Second)
+	defer timeout.Stop()
+	defer ticker.Stop()
+
 	for {
 		select {
-		case <-timeout:
-			log.Printf("Timeout waiting for node %s to drain", node.Name)
+		case <-timeout.C:
+			log.Printf("Timeout draining node %s", node.Name)
 			return
-		case <-tick:
-			pods, err := a.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + node.Name})
-			if err != nil {
-				continue
-			}
-			nonDS := 0
-			for _, p := range pods.Items {
-				isDS := false
-				for _, owner := range p.OwnerReferences {
-					if owner.Kind == "DaemonSet" {
-						isDS = true
+		case <-ticker.C:
+			current, _ := a.k8sClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+				FieldSelector: "spec.nodeName=" + node.Name,
+			})
+			nonDaemon := 0
+			for _, p := range current.Items {
+				isDaemon := false
+				for _, ref := range p.OwnerReferences {
+					if ref.Kind == "DaemonSet" {
+						isDaemon = true
 						break
 					}
 				}
-				if !isDS {
-					nonDS++
+				if !isDaemon {
+					nonDaemon++
 				}
 			}
-			if nonDS == 0 {
-				log.Printf("Drained node %s", node.Name)
+			if nonDaemon == 0 {
+				log.Printf("Successfully drained node %s", node.Name)
 				return
 			}
 		}
@@ -319,7 +358,7 @@ func (a *Autoscaler) getInstanceID(node *v1.Node) string {
 
 func (a *Autoscaler) terminateSpecificInstance(ctx context.Context, asgName, instanceID string) {
 	if a.dryRun {
-		log.Printf("Dry-run: Would terminate instance %s in ASG %s and decrement desired", instanceID, asgName)
+		log.Printf("Dry-run: Would terminate instance %s in ASG %s (decrement desired capacity)", instanceID, asgName)
 		return
 	}
 
@@ -329,16 +368,21 @@ func (a *Autoscaler) terminateSpecificInstance(ctx context.Context, asgName, ins
 	}
 	_, err := a.asgClient.TerminateInstanceInAutoScalingGroup(ctx, input)
 	if err != nil {
-		log.Printf("Failed to terminate instance %s in ASG %s: %v", instanceID, asgName, err)
+		log.Printf("Failed to terminate instance %s: %v", instanceID, err)
 		return
 	}
-	log.Printf("Terminated instance %s in ASG %s and decremented desired", instanceID, asgName)
+	log.Printf("Terminated instance %s in ASG %s", instanceID, asgName)
 }
 
 func (a *Autoscaler) scaleUp(ctx context.Context, ng *types.Nodegroup) {
+	if ng.ScalingConfig == nil || ng.ScalingConfig.DesiredSize == nil || ng.ScalingConfig.MaxSize == nil {
+		log.Printf("Scaling config missing for nodegroup %s", *ng.NodegroupName)
+		return
+	}
+
 	newDesired := *ng.ScalingConfig.DesiredSize + 1
-	if newDesired > *ng.ScalingConfig.MaxSize {
-		log.Printf("Scale up out of bounds for %s", *ng.NodegroupName)
+	if int32(newDesired) > *ng.ScalingConfig.MaxSize {
+		log.Printf("Scale up would exceed MaxSize for %s", *ng.NodegroupName)
 		return
 	}
 
@@ -351,9 +395,12 @@ func (a *Autoscaler) scaleUp(ctx context.Context, ng *types.Nodegroup) {
 		ClusterName:   aws.String(a.config.ClusterName),
 		NodegroupName: ng.NodegroupName,
 		ScalingConfig: &types.NodegroupScalingConfig{
-			DesiredSize: aws.Int64(newDesired),
+			MinSize:     ng.ScalingConfig.MinSize,
+			MaxSize:     ng.ScalingConfig.MaxSize,
+			DesiredSize: aws.Int32(int32(newDesired)),
 		},
 	}
+
 	_, err := a.eksClient.UpdateNodegroupConfig(ctx, input)
 	if err != nil {
 		log.Printf("Failed to scale up %s: %v", *ng.NodegroupName, err)
