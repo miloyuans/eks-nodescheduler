@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/autoscaling v1.43.3
 	github.com/aws/aws-sdk-go-v2/service/eks v1.48.3
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1 // 长期未更新，但仍可用
-	go.mongodb.org/mongo-driver v2.4.1 // v2 最新系列
+	go.mongodb.org/mongo-driver v2.4.0 // v2 最新系列
 	golang.org/x/net v0.40.0
 	google.golang.org/grpc v1.78.0 // 最新
 	google.golang.org/protobuf v1.36.6
