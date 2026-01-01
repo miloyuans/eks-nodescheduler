@@ -52,7 +52,10 @@ func ProcessCluster(wg *sync.WaitGroup, central *core.Central, acct config.Accou
 
 			if avgUtil > float64(cluster.HighThreshold)/100 {
 				scaleUp(eksClient, cluster.Name, ng)
-				notifier.Send(fmt.Sprintf("[↑] %s/%s scaled up", cluster.Name, ng.Name), central.cfg.Telegram.ChatIDs)
+				notifier.Send(
+					fmt.Sprintf("[↑] %s/%s scaled up", cluster.Name, ng.Name),
+					central.GetTelegramChatIDs(), // 使用公开方法
+				)
 				continue
 			}
 
@@ -79,7 +82,10 @@ func ProcessCluster(wg *sync.WaitGroup, central *core.Central, acct config.Accou
 
 				terminateInstance(asgClient, ng.AsgName, instanceID)
 				lastScaleDown[ng.Name] = time.Now()
-				notifier.Send(fmt.Sprintf("[↓] %s/%s scaled down (terminated %s)", cluster.Name, ng.Name, instanceID), central.cfg.Telegram.ChatIDs)
+				notifier.Send(
+					fmt.Sprintf("[↓] %s/%s scaled down (terminated %s)", cluster.Name, ng.Name, instanceID),
+					central.GetTelegramChatIDs(), // 使用公开方法
+				)
 			}
 		}
 	}
@@ -111,7 +117,7 @@ func selectLowNode(utils map[string]float64, avg float64) string {
 func simulateRemoval(nodes []*pb.NodeInfo, lowNode string, maxThreshold int) bool {
 	var totalReq int64
 	for _, n := range nodes {
-		totalReq += n.RequestCpuMilli
+		totalReq += n.RequestCpuMilli // proto 生成字段首字母大写
 	}
 	remaining := len(nodes) - 1
 	if remaining == 0 {

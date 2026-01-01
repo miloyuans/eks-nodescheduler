@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	pb "central/proto"
 	"central/config"
@@ -16,7 +17,7 @@ import (
 type Central struct {
 	cfg          *config.GlobalConfig
 	clusterChans map[string]chan *pb.ReportRequest
-	pb.UnimplementedAutoscalerServiceServer // 必须嵌入以满足接口
+	pb.UnimplementedAutoscalerServiceServer // 必须嵌入
 }
 
 func New(cfg *config.GlobalConfig) *Central {
@@ -31,6 +32,11 @@ func New(cfg *config.GlobalConfig) *Central {
 		}
 	}
 	return c
+}
+
+// 新增：公开获取 Telegram ChatIDs 的方法
+func (c *Central) GetTelegramChatIDs() []int64 {
+	return c.cfg.Telegram.ChatIDs
 }
 
 func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
