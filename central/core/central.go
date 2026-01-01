@@ -8,47 +8,25 @@ import (
 	"time"
 
 	"central/config"
+	"central/model"
 	"central/notifier"
 	"central/storage"
 )
 
 type Central struct {
 	cfg          *config.GlobalConfig
-	clusterChans map[string]chan ReportRequest // 简化：不依赖 proto
-}
-
-type ReportRequest struct {
-	ClusterName string         `json:"cluster_name"`
-	NodeGroups  []NodeGroupData `json:"node_groups"`
-	Timestamp   int64          `json:"timestamp"`
-}
-
-type NodeGroupData struct {
-	Name        string            `json:"name"`
-	AsgName     string            `json:"asg_name"`
-	MinSize     int32             `json:"min_size"`
-	MaxSize     int32             `json:"max_size"`
-	DesiredSize int32             `json:"desired_size"`
-	NodeUtils   map[string]float64 `json:"node_utils"`
-	Nodes       []NodeInfo        `json:"nodes"`
-}
-
-type NodeInfo struct {
-	Name                string `json:"name"`
-	InstanceId          string `json:"instance_id"`
-	RequestCpuMilli     int64  `json:"request_cpu_milli"`
-	AllocatableCpuMilli int64  `json:"allocatable_cpu_milli"`
+	clusterChans map[string]chan model.ReportRequest
 }
 
 func New(cfg *config.GlobalConfig) *Central {
 	c := &Central{
 		cfg:          cfg,
-		clusterChans: make(map[string]chan ReportRequest),
+		clusterChans: make(map[string]chan model.ReportRequest),
 	}
 
 	for _, acct := range cfg.Accounts {
 		for _, cluster := range acct.Clusters {
-			c.clusterChans[cluster.Name] = make(chan ReportRequest, 100)
+			c.clusterChans[cluster.Name] = make(chan model.ReportRequest, 100)
 		}
 	}
 	return c
@@ -64,7 +42,7 @@ func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req ReportRequest
+	var req model.ReportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return
@@ -100,6 +78,6 @@ func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (c *Central) GetClusterChan(name string) chan ReportRequest {
+func (c *Central) GetClusterChan(name string) chan model.ReportRequest {
 	return c.clusterChans[name]
 }

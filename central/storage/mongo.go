@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"central/config"
-	"central/core"
+	"central/model"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -52,7 +52,7 @@ func InitMongo(cfg *config.GlobalConfig) error {
 	return nil
 }
 
-func StoreReport(clusterName string, req core.ReportRequest) error {
+func StoreReport(clusterName string, req model.ReportRequest) error {
 	client, ok := clients[clusterName]
 	if !ok {
 		return fmt.Errorf("no mongo client for cluster %s", clusterName)
@@ -62,7 +62,7 @@ func StoreReport(clusterName string, req core.ReportRequest) error {
 	coll := db.Collection("reports")
 
 	type storedReport struct {
-		core.ReportRequest
+		model.ReportRequest
 		CreatedAt time.Time `bson:"createdAt"`
 	}
 

@@ -10,6 +10,7 @@ import (
 
 	"central/config"
 	"central/core"
+	"central/model"
 	"central/notifier"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -113,7 +114,7 @@ func selectLowNode(utils map[string]float64, avg float64) string {
 	return low
 }
 
-func simulateRemoval(nodes []core.NodeInfo, lowNode string, maxThreshold int) bool {
+func simulateRemoval(nodes []model.NodeInfo, lowNode string, maxThreshold int) bool {
 	var totalReq int64
 	for _, n := range nodes {
 		totalReq += n.RequestCpuMilli
@@ -134,7 +135,7 @@ func simulateRemoval(nodes []core.NodeInfo, lowNode string, maxThreshold int) bo
 	return true
 }
 
-func scaleUp(client *eks.Client, clusterName string, ng core.NodeGroupData) {
+func scaleUp(client *eks.Client, clusterName string, ng model.NodeGroupData) {
 	newDesired := ng.DesiredSize + 1
 	if newDesired > ng.MaxSize {
 		return
