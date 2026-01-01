@@ -40,13 +40,13 @@ type AccountConfig struct {
 }
 
 type ClusterConfig struct {
-	Name             string   `yaml:"name"`
-	Region           string   `yaml:"region"`
-	HighThreshold    int      `yaml:"high_threshold"`
-	LowThreshold     int      `yaml:"low_threshold"`
-	MaxThreshold     int      `yaml:"max_threshold"`
-	CooldownSeconds  int      `yaml:"cooldown_seconds"`
-	NodeGroups       []string `yaml:"node_groups"`
+	Name            string   `yaml:"name"`
+	Region          string   `yaml:"region"`
+	HighThreshold   int      `yaml:"high_threshold"`
+	LowThreshold    int      `yaml:"low_threshold"`
+	MaxThreshold    int      `yaml:"max_threshold"`
+	CooldownSeconds int      `yaml:"cooldown_seconds"`
+	NodeGroups      []string `yaml:"node_groups"`
 }
 
 func Load(file string) (*GlobalConfig, error) {
@@ -55,8 +55,5 @@ func Load(file string) (*GlobalConfig, error) {
 		return nil, err
 	}
 	var cfg GlobalConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
+	return &cfg, yaml.Unmarshal(data, &cfg)
 }

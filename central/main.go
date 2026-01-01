@@ -3,9 +3,11 @@ package main
 
 import (
 	"log"
+	"os"
 	"sync"
 
 	"central/config"
+	"central/core"
 	"central/notifier"
 	"central/processor"
 	"central/server"
@@ -13,41 +15,53 @@ import (
 )
 
 func main() {
-	cfg, err := config.Load("config.yaml")
+	configFile := "config.yaml"
+	if len(os.Args) > 1 {
+		configFile = os.Args[1]
+	}
+
+	cfg, err := config.Load(configFile)
 	if err != nil {
-		log.Fatalf("Load config failed: %v", err)
+		log.Fatalf("Failed to load config %s: %v", configFile, err)
 	}
 
+	// 初始化 Telegram 通知
 	if err := notifier.Init(cfg); err != nil {
-		log.Fatalf("Init notifier failed: %v", err)
+		log.Printf("Telegram init failed: %v (notifications disabled)", err)
 	}
 
+	// 初始化 MongoDB（每个集群独立 DB + TTL）
 	if err := storage.InitMongo(cfg); err != nil {
-		log.Fatalf("Init Mongo failed: %v", err)
+		log.Fatalf("MongoDB init failed: %v", err)
 	}
 
-	// 创建 Central 实例
-	central := NewCentral(cfg)  // 使用我们定义的 NewCentral
+	// 创建核心 Central 实例
+	central := core.New(cfg)
 
 	var wg sync.WaitGroup
 
+	// 启动 HTTP 服务器（如果启用）
 	if cfg.Server.HTTP.Enabled {
 		wg.Add(1)
 		go server.StartHTTP(&wg, cfg, central)
 	}
+
+	// 启动 gRPC 服务器（如果启用）
 	if cfg.Server.GRPC.Enabled {
 		wg.Add(1)
 		go server.StartGRPC(&wg, cfg, central)
 	}
 
-	// 启动集群处理器
-	for _, acct := range cfg.Accounts {
-		for i := range acct.Clusters {
-			cluster := &acct.Clusters[i]
+	// 为每个集群启动独立的处理 Goroutine
+	for i := range cfg.Accounts {
+		acct := &cfg.Accounts[i]
+		for j := range acct.Clusters {
+			cluster := &acct.Clusters[j]
 			wg.Add(1)
-			go processor.ProcessCluster(&wg, central, acct, cluster)
+			go processor.ProcessCluster(&wg, central, *acct, cluster)
 		}
 	}
 
+	log.Println("Central server started successfully")
 	wg.Wait()
 }

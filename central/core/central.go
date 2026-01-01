@@ -1,5 +1,5 @@
-// central/central.go
-package main
+// central/core/central.go
+package core
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 
 	pb "central/proto"
 	"central/config"
+	"central/notifier"
+	"central/storage"
 )
 
 type Central struct {
@@ -17,13 +19,12 @@ type Central struct {
 	clusterChans map[string]chan *pb.ReportRequest
 }
 
-func NewCentral(cfg *config.GlobalConfig) *Central {
+func New(cfg *config.GlobalConfig) *Central {
 	c := &Central{
 		cfg:          cfg,
 		clusterChans: make(map[string]chan *pb.ReportRequest),
 	}
-	
-	// 为每个集群创建 channel
+
 	for _, acct := range cfg.Accounts {
 		for _, cluster := range acct.Clusters {
 			c.clusterChans[cluster.Name] = make(chan *pb.ReportRequest, 100)
@@ -32,53 +33,44 @@ func NewCentral(cfg *config.GlobalConfig) *Central {
 	return c
 }
 
-// HTTP Report 处理函数
-func (c *Central) httpReportHandler(w http.ResponseWriter, r *http.Request) {
+func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Only POST", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var req pb.ReportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
 	if ch, ok := c.clusterChans[req.ClusterName]; ok {
 		select {
 		case ch <- &req:
-			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]bool{"success": true})
 		default:
 			http.Error(w, "Queue full", http.StatusServiceUnavailable)
 		}
 	} else {
-		http.Error(w, fmt.Sprintf("Cluster %s not found", req.ClusterName), http.StatusNotFound)
+		http.Error(w, "Cluster not found", http.StatusNotFound)
 	}
 }
 
-// gRPC ReportData 方法实现
 func (c *Central) ReportData(ctx context.Context, req *pb.ReportRequest) (*pb.ReportResponse, error) {
-	log.Printf("Received report from cluster: %s", req.ClusterName)
-	
 	if ch, ok := c.clusterChans[req.ClusterName]; ok {
 		select {
 		case ch <- req:
-			return &pb.ReportResponse{
-				Success: true,
-				Message: "Report queued successfully",
-			}, nil
+			storage.StoreReport(req.ClusterName, req)
+			return &pb.ReportResponse{Success: true, Message: "Queued"}, nil
 		default:
-			return nil, fmt.Errorf("queue full for cluster %s", req.ClusterName)
+			return nil, fmt.Errorf("queue full")
 		}
 	}
-	
-	return nil, fmt.Errorf("cluster %s not found", req.ClusterName)
+	return nil, fmt.Errorf("cluster not found")
 }
 
-// 获取指定集群的 channel
-func (c *Central) GetClusterChan(clusterName string) chan *pb.ReportRequest {
-	return c.clusterChans[clusterName]
+func (c *Central) GetClusterChan(name string) chan *pb.ReportRequest {
+	return c.clusterChans[name]
 }

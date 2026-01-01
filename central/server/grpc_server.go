@@ -5,33 +5,30 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 
 	"central/config"
+	"central/core"
 	"central/middleware"
+	"central/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
-
-	pb "central/proto"  // proto 已生成
 )
 
-func StartGRPC(wg *sync.WaitGroup, cfg *config.GlobalConfig, central *Central) {  // Central 已定义
+func StartGRPC(wg *sync.WaitGroup, cfg *config.GlobalConfig, central *core.Central) {
 	defer wg.Done()
 
 	whitelist := middleware.New(cfg.Whitelist)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.GRPC.Addr, cfg.Server.GRPC.Port)
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("gRPC listen failed: %v", err)
+		log.Fatal(err)
 	}
 
-	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(whitelist.GRPCUnary),
-	)
-	pb.RegisterAutoscalerServiceServer(grpcServer, central)  // 正确注册
-	reflection.Register(grpcServer)
+	s := grpc.NewServer(grpc.UnaryInterceptor(whitelist.GRPC))
+	proto.RegisterAutoscalerServiceServer(s, central)
+	reflection.Register(s)
 
-	log.Printf("gRPC server starting on %s", addr)
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("gRPC server failed: %v", err)
-	}
+	log.Printf("gRPC server on %s", addr)
+	log.Fatal(s.Serve(lis))
 }
