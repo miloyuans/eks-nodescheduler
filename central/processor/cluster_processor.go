@@ -117,7 +117,7 @@ func selectLowNode(utils map[string]float64, avg float64) string {
 func simulateRemoval(nodes []*pb.NodeInfo, lowNode string, maxThreshold int) bool {
 	var totalReq int64
 	for _, n := range nodes {
-		totalReq += n.RequestCpuMilli // proto 生成字段首字母大写
+		totalReq += n.RequestCpuMilli  // 正确字段名
 	}
 	remaining := len(nodes) - 1
 	if remaining == 0 {
@@ -128,7 +128,7 @@ func simulateRemoval(nodes []*pb.NodeInfo, lowNode string, maxThreshold int) boo
 		if n.Name == lowNode {
 			continue
 		}
-		if float64(avgReq)/float64(n.AllocatableCpuMilli) > float64(maxThreshold)/100 {
+		if float64(avgReq)/float64(n.AllocatableCpuMilli) > float64(maxThreshold)/100 {  // 正确字段名
 			return false
 		}
 	}
