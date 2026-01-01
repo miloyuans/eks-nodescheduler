@@ -20,6 +20,6 @@ func StartHTTP(wg *sync.WaitGroup, cfg *config.GlobalConfig, central *core.Centr
 	mux.Handle("/report", whitelist.HTTP(http.HandlerFunc(central.HTTPReportHandler)))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.HTTP.Addr, cfg.Server.HTTP.Port)
-	log.Printf("HTTP server on %s", addr)
+	log.Printf("HTTP server starting on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }

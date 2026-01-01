@@ -2,15 +2,8 @@
 package middleware
 
 import (
-	"context"
-	"log"
 	"net"
 	"net/http"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
 )
 
 type Whitelist struct {
@@ -22,7 +15,6 @@ func New(cidrs []string) *Whitelist {
 	for _, c := range cidrs {
 		_, n, err := net.ParseCIDR(c)
 		if err != nil {
-			log.Printf("Invalid CIDR %s: %v", c, err)
 			continue
 		}
 		w.nets = append(w.nets, n)
@@ -52,17 +44,4 @@ func (w *Whitelist) HTTP(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(rw, r)
 	})
-}
-
-func (w *Whitelist) GRPC(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-	p, ok := peer.FromContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.PermissionDenied, "No peer")
-	}
-	ipStr, _, _ := net.SplitHostPort(p.Addr.String())
-	ip := net.ParseIP(ipStr)
-	if !w.Allow(ip) {
-		return nil, status.Error(codes.PermissionDenied, "Forbidden")
-	}
-	return handler(ctx, req)
 }

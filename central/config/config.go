@@ -14,11 +14,6 @@ type GlobalConfig struct {
 			Addr    string `yaml:"addr"`
 			Port    int    `yaml:"port"`
 		} `yaml:"http"`
-		GRPC struct {
-			Enabled bool   `yaml:"enabled"`
-			Addr    string `yaml:"addr"`
-			Port    int    `yaml:"port"`
-		} `yaml:"grpc"`
 	} `yaml:"server"`
 	Whitelist []string `yaml:"whitelist"`
 	Mongo struct {

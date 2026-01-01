@@ -1,0 +1,31 @@
+server:
+  http:
+    enabled: true
+    addr: 0.0.0.0
+    port: 8080
+
+whitelist:
+  - "10.0.0.0/8"
+  - "192.168.0.0/16"
+
+mongo:
+  uri: "mongodb://localhost:27017"
+  ttl_days: 7
+
+telegram:
+  bot_token: "YOUR_BOT_TOKEN"
+  chat_ids:
+    - -1001234567890
+
+accounts:
+  - account_id: "111111111111"
+    access_key: "AKIA..."
+    secret_key: "xxxx"
+    clusters:
+      - name: "prod-eks"
+        region: "us-west-2"
+        high_threshold: 80
+        low_threshold: 30
+        max_threshold: 70
+        cooldown_seconds: 600
+        node_groups: []

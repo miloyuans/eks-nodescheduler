@@ -2,12 +2,11 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	
-	pb "central/proto"
+	"time"
+
 	"central/config"
 	"central/notifier"
 	"central/storage"
@@ -15,25 +14,46 @@ import (
 
 type Central struct {
 	cfg          *config.GlobalConfig
-	clusterChans map[string]chan *pb.ReportRequest
-	pb.UnimplementedAutoscalerServiceServer // 必须嵌入
+	clusterChans map[string]chan ReportRequest // 简化：不依赖 proto
+}
+
+type ReportRequest struct {
+	ClusterName string         `json:"cluster_name"`
+	NodeGroups  []NodeGroupData `json:"node_groups"`
+	Timestamp   int64          `json:"timestamp"`
+}
+
+type NodeGroupData struct {
+	Name        string            `json:"name"`
+	AsgName     string            `json:"asg_name"`
+	MinSize     int32             `json:"min_size"`
+	MaxSize     int32             `json:"max_size"`
+	DesiredSize int32             `json:"desired_size"`
+	NodeUtils   map[string]float64 `json:"node_utils"`
+	Nodes       []NodeInfo        `json:"nodes"`
+}
+
+type NodeInfo struct {
+	Name                string `json:"name"`
+	InstanceId          string `json:"instance_id"`
+	RequestCpuMilli     int64  `json:"request_cpu_milli"`
+	AllocatableCpuMilli int64  `json:"allocatable_cpu_milli"`
 }
 
 func New(cfg *config.GlobalConfig) *Central {
 	c := &Central{
 		cfg:          cfg,
-		clusterChans: make(map[string]chan *pb.ReportRequest),
+		clusterChans: make(map[string]chan ReportRequest),
 	}
 
 	for _, acct := range cfg.Accounts {
 		for _, cluster := range acct.Clusters {
-			c.clusterChans[cluster.Name] = make(chan *pb.ReportRequest, 100)
+			c.clusterChans[cluster.Name] = make(chan ReportRequest, 100)
 		}
 	}
 	return c
 }
 
-// 新增：公开获取 Telegram ChatIDs 的方法
 func (c *Central) GetTelegramChatIDs() []int64 {
 	return c.cfg.Telegram.ChatIDs
 }
@@ -44,7 +64,7 @@ func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req pb.ReportRequest
+	var req ReportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return
@@ -62,8 +82,8 @@ func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	case ch <- &req:
-		if err := storage.StoreReport(req.ClusterName, &req); err != nil {
+	case ch <- req:
+		if err := storage.StoreReport(req.ClusterName, req); err != nil {
 			fmt.Printf("Warning: store report failed: %v\n", err)
 		}
 
@@ -80,33 +100,6 @@ func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (c *Central) ReportData(ctx context.Context, req *pb.ReportRequest) (*pb.ReportResponse, error) {
-	if req.ClusterName == "" {
-		return &pb.ReportResponse{Success: false, Message: "Missing cluster_name"}, nil
-	}
-
-	ch, ok := c.clusterChans[req.ClusterName]
-	if !ok {
-		return &pb.ReportResponse{Success: false, Message: fmt.Sprintf("Unknown cluster: %s", req.ClusterName)}, nil
-	}
-
-	select {
-	case ch <- req:
-		if err := storage.StoreReport(req.ClusterName, req); err != nil {
-			fmt.Printf("Warning: store gRPC report failed: %v\n", err)
-		}
-
-		notifier.Send(
-			fmt.Sprintf("[RECEIVED] gRPC report from *%s*", req.ClusterName),
-			c.cfg.Telegram.ChatIDs,
-		)
-
-		return &pb.ReportResponse{Success: true, Message: "queued"}, nil
-	default:
-		return &pb.ReportResponse{Success: false, Message: "queue full"}, nil
-	}
-}
-
-func (c *Central) GetClusterChan(name string) chan *pb.ReportRequest {
+func (c *Central) GetClusterChan(name string) chan ReportRequest {
 	return c.clusterChans[name]
 }

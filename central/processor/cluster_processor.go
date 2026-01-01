@@ -11,7 +11,6 @@ import (
 	"central/config"
 	"central/core"
 	"central/notifier"
-	pb "central/proto"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -54,7 +53,7 @@ func ProcessCluster(wg *sync.WaitGroup, central *core.Central, acct config.Accou
 				scaleUp(eksClient, cluster.Name, ng)
 				notifier.Send(
 					fmt.Sprintf("[↑] %s/%s scaled up", cluster.Name, ng.Name),
-					central.GetTelegramChatIDs(), // 使用公开方法
+					central.GetTelegramChatIDs(),
 				)
 				continue
 			}
@@ -84,7 +83,7 @@ func ProcessCluster(wg *sync.WaitGroup, central *core.Central, acct config.Accou
 				lastScaleDown[ng.Name] = time.Now()
 				notifier.Send(
 					fmt.Sprintf("[↓] %s/%s scaled down (terminated %s)", cluster.Name, ng.Name, instanceID),
-					central.GetTelegramChatIDs(), // 使用公开方法
+					central.GetTelegramChatIDs(),
 				)
 			}
 		}
@@ -114,10 +113,10 @@ func selectLowNode(utils map[string]float64, avg float64) string {
 	return low
 }
 
-func simulateRemoval(nodes []*pb.NodeInfo, lowNode string, maxThreshold int) bool {
+func simulateRemoval(nodes []core.NodeInfo, lowNode string, maxThreshold int) bool {
 	var totalReq int64
 	for _, n := range nodes {
-		totalReq += n.RequestCpuMilli  // 正确字段名
+		totalReq += n.RequestCpuMilli
 	}
 	remaining := len(nodes) - 1
 	if remaining == 0 {
@@ -128,14 +127,14 @@ func simulateRemoval(nodes []*pb.NodeInfo, lowNode string, maxThreshold int) boo
 		if n.Name == lowNode {
 			continue
 		}
-		if float64(avgReq)/float64(n.AllocatableCpuMilli) > float64(maxThreshold)/100 {  // 正确字段名
+		if float64(avgReq)/float64(n.AllocatableCpuMilli) > float64(maxThreshold)/100 {
 			return false
 		}
 	}
 	return true
 }
 
-func scaleUp(client *eks.Client, clusterName string, ng *pb.NodeGroupData) {
+func scaleUp(client *eks.Client, clusterName string, ng core.NodeGroupData) {
 	newDesired := ng.DesiredSize + 1
 	if newDesired > ng.MaxSize {
 		return

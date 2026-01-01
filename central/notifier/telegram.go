@@ -10,7 +10,6 @@ import (
 
 var bot *tgbotapi.BotAPI
 
-// Init 初始化 Telegram Bot（只需调用一次）
 func Init(cfg *config.GlobalConfig) error {
 	if cfg.Telegram.BotToken == "" {
 		log.Println("Telegram BotToken empty, notification disabled")
@@ -27,10 +26,9 @@ func Init(cfg *config.GlobalConfig) error {
 	return nil
 }
 
-// Send 发送消息到配置的所有聊天群/用户
 func Send(message string, chatIDs []int64) {
 	if bot == nil || len(chatIDs) == 0 {
-		log.Printf("Telegram notification skipped (bot not init or no chatIDs): %s", message)
+		log.Printf("Telegram notification skipped: %s", message)
 		return
 	}
 
@@ -40,8 +38,6 @@ func Send(message string, chatIDs []int64) {
 
 		if _, err := bot.Send(msg); err != nil {
 			log.Printf("Telegram send failed to %d: %v", chatID, err)
-		} else {
-			log.Printf("Telegram sent to %d: %s", chatID, message)
 		}
 	}
 }
