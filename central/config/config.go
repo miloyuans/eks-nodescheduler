@@ -42,6 +42,12 @@ type ClusterConfig struct {
 	MaxThreshold    int      `yaml:"max_threshold"`
 	CooldownSeconds int      `yaml:"cooldown_seconds"`
 	NodeGroups      []string `yaml:"node_groups"`
+	NodeGroupPrefix string   `yaml:"node_group_prefix"`
+	InstanceType    string   `yaml:"instance_type"`
+	DiskSize        int      `yaml:"disk_size"`
+	AmiType         string   `yaml:"ami_type"`
+	IamRole         string   `yaml:"iam_role"`
+	UtilThreshold   float64  `yaml:"util_threshold"` // e.g., 0.5 for 50%
 }
 
 func Load(file string) (*GlobalConfig, error) {
@@ -50,5 +56,8 @@ func Load(file string) (*GlobalConfig, error) {
 		return nil, err
 	}
 	var cfg GlobalConfig
-	return &cfg, yaml.Unmarshal(data, &cfg)
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
