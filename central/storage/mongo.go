@@ -42,11 +42,11 @@ func InitMongo(cfg *config.GlobalConfig) error {
 
 			_, err = coll.Indexes().CreateOne(context.Background(), indexModel)
 			if err != nil {
-				log.Printf("Warning: create TTL index failed for %s: %v", cluster.Name, err)
+				log.Printf("[WARN] Create TTL index failed for %s: %v", cluster.Name, err)
 			}
 
 			clients[cluster.Name] = client
-			log.Printf("MongoDB initialized for cluster: %s", cluster.Name)
+			log.Printf("[INFO] MongoDB initialized for cluster: %s", cluster.Name)
 		}
 	}
 	return nil
@@ -76,4 +76,14 @@ func StoreReport(clusterName string, req model.ReportRequest) error {
 		return fmt.Errorf("mongo insert failed for %s: %w", clusterName, err)
 	}
 	return nil
+}
+
+func Shutdown() {
+	for name, client := range clients {
+		if err := client.Disconnect(context.Background()); err != nil {
+			log.Printf("[WARN] Mongo disconnect failed for %s: %v", name, err)
+		} else {
+			log.Printf("[INFO] Mongo disconnected for %s", name)
+		}
+	}
 }

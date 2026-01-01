@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"central/config"
 	"central/core"
@@ -26,18 +27,19 @@ func StartHTTP(ctx context.Context, wg *sync.WaitGroup, cfg *config.GlobalConfig
 	}
 
 	go func() {
-		log.Printf("HTTP server starting on %s", server.Addr)
+		log.Printf("[INFO] HTTP server starting on %s", server.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server failed: %v", err)
+			log.Fatalf("[FATAL] HTTP server failed: %v", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("HTTP server shutting down...")
-	ctxShutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	log.Println("[INFO] HTTP server shutting down...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := server.Shutdown(ctxShutdown); err != nil {
-		log.Printf("HTTP shutdown failed: %v", err)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[WARN] HTTP server forced shutdown: %v", err)
+	} else {
+		log.Println("[INFO] HTTP server shutdown gracefully")
 	}
-	log.Println("HTTP server shutdown complete")
 }

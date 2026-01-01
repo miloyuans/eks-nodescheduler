@@ -6,6 +6,7 @@ server:
 
 whitelist:
   - "10.0.0.0/8"
+  - "172.16.0.0/12"
   - "192.168.0.0/16"
 
 mongo:
@@ -13,19 +14,19 @@ mongo:
   ttl_days: 7
 
 telegram:
-  bot_token: "YOUR_BOT_TOKEN"
+  bot_token: "YOUR_BOT_TOKEN_HERE"
   chat_ids:
-    - -1001234567890
+    - -1001234567890   # 你的通知群 ID
 
 accounts:
-  - account_id: "111111111111"
+  - account_id: "123456789012"
     access_key: "AKIA..."
-    secret_key: "xxxx"
+    secret_key: "xxxxxx"
     clusters:
-      - name: "prod-eks"
+      - name: "prod-eks-us"
         region: "us-west-2"
         high_threshold: 80
         low_threshold: 30
         max_threshold: 70
         cooldown_seconds: 600
-        node_groups: []
+        node_groups: []   # 空表示处理所有

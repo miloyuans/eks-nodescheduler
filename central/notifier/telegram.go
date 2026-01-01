@@ -12,7 +12,7 @@ var bot *tgbotapi.BotAPI
 
 func Init(cfg *config.GlobalConfig) error {
 	if cfg.Telegram.BotToken == "" {
-		log.Println("Telegram BotToken empty, notification disabled")
+		log.Println("[WARN] Telegram BotToken empty, notification disabled")
 		return nil
 	}
 
@@ -22,13 +22,13 @@ func Init(cfg *config.GlobalConfig) error {
 		return err
 	}
 
-	log.Printf("Telegram bot authorized as @%s", bot.Self.UserName)
+	log.Printf("[INFO] Telegram bot authorized as @%s", bot.Self.UserName)
 	return nil
 }
 
 func Send(message string, chatIDs []int64) {
 	if bot == nil || len(chatIDs) == 0 {
-		log.Printf("Telegram notification skipped: %s", message)
+		log.Printf("[DEBUG] Telegram notification skipped: %s", message)
 		return
 	}
 
@@ -37,7 +37,9 @@ func Send(message string, chatIDs []int64) {
 		msg.ParseMode = tgbotapi.ModeMarkdown
 
 		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Telegram send failed to %d: %v", chatID, err)
+			log.Printf("[ERROR] Telegram send failed to %d: %v", chatID, err)
+		} else {
+			log.Printf("[INFO] Telegram sent to %d: %s", chatID, message)
 		}
 	}
 }

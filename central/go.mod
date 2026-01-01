@@ -1,7 +1,7 @@
 // central/go.mod
 module central
 
-go 1.25  // 2025年8月发布，2026年1月仍是当前稳定主版本
+go 1.25
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.30.4
@@ -10,12 +10,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/autoscaling v1.43.3
 	github.com/aws/aws-sdk-go-v2/service/eks v1.48.3
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
-	go.mongodb.org/mongo-driver v1.17.1  // 稳定 v1 系列最新版
+	go.mongodb.org/mongo-driver v1.17.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
-	// indirect dependencies (go mod tidy 会自动填充，这里列出主要)
+	// indirect dependencies
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.12 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.16 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.16 // indirect

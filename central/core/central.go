@@ -52,16 +52,38 @@ func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 检查是否匹配配置中的集群
+	found := false
+	for _, acct := range c.cfg.Accounts {
+		for _, cluster := range acct.Clusters {
+			if cluster.Name == req.ClusterName {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+
+	if !found {
+		msg := fmt.Sprintf("[WARN] Received report from unknown cluster: %s", req.ClusterName)
+		log.Println(msg)
+		notifier.Send(msg, c.cfg.Telegram.ChatIDs)
+		http.Error(w, "Unknown cluster", http.StatusNotFound)
+		return
+	}
+
 	ch, ok := c.clusterChans[req.ClusterName]
 	if !ok {
-		http.Error(w, fmt.Sprintf("Unknown cluster: %s", req.ClusterName), http.StatusNotFound)
+		http.Error(w, "Internal error: channel not found", http.StatusInternalServerError)
 		return
 	}
 
 	select {
 	case ch <- req:
 		if err := storage.StoreReport(req.ClusterName, req); err != nil {
-			fmt.Printf("Warning: store report failed: %v\n", err)
+			log.Printf("[WARN] Failed to store report for %s: %v", req.ClusterName, err)
 		}
 
 		notifier.Send(
