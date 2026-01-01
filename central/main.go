@@ -2,11 +2,12 @@
 package main
 
 import (
-	"context"
 	"log"
 	"sync"
 
 	"central/config"
+	"central/notifier"
+	"central/processor"
 	"central/server"
 	"central/storage"
 )
@@ -17,18 +18,19 @@ func main() {
 		log.Fatalf("Load config failed: %v", err)
 	}
 
-	// 初始化 Mongo（为每个 cluster 创建 DB + TTL）
+	if err := notifier.Init(cfg); err != nil {
+		log.Fatalf("Init notifier failed: %v", err)
+	}
+
 	if err := storage.InitMongo(cfg); err != nil {
 		log.Fatalf("Init Mongo failed: %v", err)
 	}
 
-	central := &Central{
-		cfg: cfg,
-	}
+	// 创建 Central 实例
+	central := NewCentral(cfg)  // 使用我们定义的 NewCentral
 
 	var wg sync.WaitGroup
 
-	// 启动 HTTP/gRPC 服务器
 	if cfg.Server.HTTP.Enabled {
 		wg.Add(1)
 		go server.StartHTTP(&wg, cfg, central)
@@ -38,12 +40,12 @@ func main() {
 		go server.StartGRPC(&wg, cfg, central)
 	}
 
-	// 启动每个集群的独立处理器
+	// 启动集群处理器
 	for _, acct := range cfg.Accounts {
 		for i := range acct.Clusters {
-			cluster := &acct.Clusters[i] // 指针避免拷贝
+			cluster := &acct.Clusters[i]
 			wg.Add(1)
-			go central.startClusterProcessor(&wg, acct, cluster)
+			go processor.ProcessCluster(&wg, central, acct, cluster)
 		}
 	}
 
