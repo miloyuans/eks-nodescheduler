@@ -11,26 +11,32 @@ import (
 	"central/config"
 	"central/core"
 	"central/notifier"
-	"central/proto"
+	pb "central/proto"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
 func ProcessCluster(wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
 	defer wg.Done()
 
-	awsCfg, _ := config.LoadDefaultConfig(context.Background(),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(acct.AccessKey, acct.SecretKey, "")),
-		config.WithRegion(cluster.Region),
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(acct.AccessKey, acct.SecretKey, "")),
+		awsconfig.WithRegion(cluster.Region),
 	)
+	if err != nil {
+		log.Printf("AWS config failed for cluster %s: %v", cluster.Name, err)
+		return
+	}
+
 	eksClient := eks.NewFromConfig(awsCfg)
 	asgClient := autoscaling.NewFromConfig(awsCfg)
 
-	lastScaleDown := make(map[string]time.Time) // nodegroup -> time
+	lastScaleDown := make(map[string]time.Time)
 
 	ch := central.GetClusterChan(cluster.Name)
 	for req := range ch {
@@ -40,6 +46,10 @@ func ProcessCluster(wg *sync.WaitGroup, central *core.Central, acct config.Accou
 			}
 
 			avgUtil := avgUtil(ng.NodeUtils)
+			if avgUtil == 0 {
+				continue
+			}
+
 			if avgUtil > float64(cluster.HighThreshold)/100 {
 				scaleUp(eksClient, cluster.Name, ng)
 				notifier.Send(fmt.Sprintf("[↑] %s/%s scaled up", cluster.Name, ng.Name), central.cfg.Telegram.ChatIDs)
@@ -50,17 +60,31 @@ func ProcessCluster(wg *sync.WaitGroup, central *core.Central, acct config.Accou
 				if time.Since(lastScaleDown[ng.Name]) < time.Duration(cluster.CooldownSeconds)*time.Second {
 					continue
 				}
-				if lowNode := selectLowNode(ng.NodeUtils, avgUtil); lowNode != "" && simulateRemoval(ng.Nodes, lowNode, cluster.MaxThreshold) {
-					terminateInstance(asgClient, ng.AsgName, lowNode)
-					lastScaleDown[ng.Name] = time.Now()
-					notifier.Send(fmt.Sprintf("[↓] %s/%s scaled down (terminated %s)", cluster.Name, ng.Name, lowNode), central.cfg.Telegram.ChatIDs)
+
+				lowNodeName := selectLowNode(ng.NodeUtils, avgUtil)
+				if lowNodeName == "" {
+					continue
 				}
+
+				var instanceID string
+				for _, node := range ng.Nodes {
+					if node.Name == lowNodeName {
+						instanceID = node.InstanceId
+						break
+					}
+				}
+				if instanceID == "" || !simulateRemoval(ng.Nodes, lowNodeName, cluster.MaxThreshold) {
+					continue
+				}
+
+				terminateInstance(asgClient, ng.AsgName, instanceID)
+				lastScaleDown[ng.Name] = time.Now()
+				notifier.Send(fmt.Sprintf("[↓] %s/%s scaled down (terminated %s)", cluster.Name, ng.Name, instanceID), central.cfg.Telegram.ChatIDs)
 			}
 		}
 	}
 }
 
-// 辅助函数
 func avgUtil(utils map[string]float64) float64 {
 	if len(utils) == 0 {
 		return 0
@@ -84,7 +108,7 @@ func selectLowNode(utils map[string]float64, avg float64) string {
 	return low
 }
 
-func simulateRemoval(nodes []*proto.NodeInfo, lowNode string, maxThreshold int) bool {
+func simulateRemoval(nodes []*pb.NodeInfo, lowNode string, maxThreshold int) bool {
 	var totalReq int64
 	for _, n := range nodes {
 		totalReq += n.RequestCpuMilli
@@ -105,7 +129,7 @@ func simulateRemoval(nodes []*proto.NodeInfo, lowNode string, maxThreshold int) 
 	return true
 }
 
-func scaleUp(client *eks.Client, clusterName string, ng *proto.NodeGroupData) {
+func scaleUp(client *eks.Client, clusterName string, ng *pb.NodeGroupData) {
 	newDesired := ng.DesiredSize + 1
 	if newDesired > ng.MaxSize {
 		return
@@ -113,9 +137,11 @@ func scaleUp(client *eks.Client, clusterName string, ng *proto.NodeGroupData) {
 	input := &eks.UpdateNodegroupConfigInput{
 		ClusterName:   aws.String(clusterName),
 		NodegroupName: aws.String(ng.Name),
-		ScalingConfig: &types.NodegroupScalingConfig{DesiredSize: aws.Int32(newDesired)},
+		ScalingConfig: &types.NodegroupScalingConfig{
+			DesiredSize: aws.Int32(newDesired),
+		},
 	}
-	client.UpdateNodegroupConfig(context.Background(), input)
+	_, _ = client.UpdateNodegroupConfig(context.Background(), input)
 }
 
 func terminateInstance(client *autoscaling.Client, asgName, instanceID string) {
@@ -123,7 +149,7 @@ func terminateInstance(client *autoscaling.Client, asgName, instanceID string) {
 		InstanceId:                     aws.String(instanceID),
 		ShouldDecrementDesiredCapacity: aws.Bool(true),
 	}
-	client.TerminateInstanceInAutoScalingGroup(context.Background(), input)
+	_, _ = client.TerminateInstanceInAutoScalingGroup(context.Background(), input)
 }
 
 func contains(slice []string, item string) bool {

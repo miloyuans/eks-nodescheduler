@@ -10,7 +10,7 @@ import (
 	"central/config"
 	"central/core"
 	"central/middleware"
-	"central/proto"
+	pb "central/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
@@ -22,13 +22,13 @@ func StartGRPC(wg *sync.WaitGroup, cfg *config.GlobalConfig, central *core.Centr
 	addr := fmt.Sprintf("%s:%d", cfg.Server.GRPC.Addr, cfg.Server.GRPC.Port)
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("gRPC listen failed: %v", err)
 	}
 
 	s := grpc.NewServer(grpc.UnaryInterceptor(whitelist.GRPC))
-	proto.RegisterAutoscalerServiceServer(s, central)
+	pb.RegisterAutoscalerServiceServer(s, central)
 	reflection.Register(s)
 
-	log.Printf("gRPC server on %s", addr)
+	log.Printf("gRPC server starting on %s", addr)
 	log.Fatal(s.Serve(lis))
 }
