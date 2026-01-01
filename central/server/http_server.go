@@ -10,7 +10,7 @@ import (
 
 	"central/config"
 	"central/middleware"
-	pb "path/to/proto"
+	pb "central/proto"
 )
 
 func StartHTTP(wg *sync.WaitGroup, cfg *config.GlobalConfig, central *Central) {
