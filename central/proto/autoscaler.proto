@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package autoscaler;
+
+option go_package = "central/proto";
+
+service AutoscalerService {
+  rpc ReportData (ReportRequest) returns (ReportResponse);
+}
+
+message ReportRequest {
+  string cluster_name = 1;
+  repeated NodeGroupData node_groups = 2;
+  int64 timestamp = 3;
+}
+
+message NodeGroupData {
+  string name = 1;
+  string asg_name = 2;
+  int32 min_size = 3;
+  int32 max_size = 4;
+  int32 desired_size = 5;
+  map<string, double> node_utils = 6;  // node_name -> cpu_util
+  repeated NodeInfo nodes = 7;
+}
+
+message NodeInfo {
+  string name = 1;
+  string instance_id = 2;
+  int64 total_request_cpu_milli = 3;
+  int64 allocatable_cpu_milli = 4;
+}
+
+message ReportResponse {
+  bool success = 1;
+  string message = 2;
+}

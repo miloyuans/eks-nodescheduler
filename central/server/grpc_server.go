@@ -11,7 +11,7 @@ import (
 	"central/middleware"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
-	pb "path/to/proto"
+	pb "central/proto"
 )
 
 func StartGRPC(wg *sync.WaitGroup, cfg *config.GlobalConfig, central *Central) {
