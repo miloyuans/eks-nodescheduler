@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings" // ← 新增：用于 getInstanceID 分割 ProviderID
+	"strings" // 用于 getInstanceID 分割 ProviderID
 	"time"
 
 	"agent/model"
@@ -15,7 +15,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
 )
 
 var reportChan chan model.ReportRequest
@@ -106,7 +105,7 @@ func CollectFull(clusterName string, filterNodeGroups []string) (model.ReportReq
 		}
 
 		allocCpu := node.Status.Allocatable.Cpu().MilliValue()
-		util := 0.0 // 简化：这里可以用其他指标，这里用 0 占位
+		util := 0.0 // 简化占位
 		ng.NodeUtils[node.Name] = util
 
 		ng.Nodes = append(ng.Nodes, model.NodeInfo{
@@ -129,23 +128,20 @@ func CollectFull(clusterName string, filterNodeGroups []string) (model.ReportReq
 	}, nil
 }
 
-// nodeEventHandler 实现 cache.ResourceEventHandler 接口
+// nodeEventHandler 实现 ResourceEventHandler 接口
 type nodeEventHandler struct {
 	clusterName      string
 	filterNodeGroups []string
 }
 
-// OnAdd 实现接口（签名必须包含 isInInitialList bool）
 func (h *nodeEventHandler) OnAdd(obj interface{}, isInInitialList bool) {
 	h.triggerReport()
 }
 
-// OnUpdate 实现接口
 func (h *nodeEventHandler) OnUpdate(oldObj, newObj interface{}) {
 	h.triggerReport()
 }
 
-// OnDelete 实现接口
 func (h *nodeEventHandler) OnDelete(obj interface{}) {
 	h.triggerReport()
 }
