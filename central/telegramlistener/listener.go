@@ -3,11 +3,9 @@ package telegramlistener
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strings"
 	"sync"
-	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
