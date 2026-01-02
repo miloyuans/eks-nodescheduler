@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"agent/collector" // ← 新增：导入 collector 包
+	"agent/collector" // ← 修复：导入 collector 包
 	"agent/model"
 	"agent/reporter"
 
@@ -21,10 +21,10 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels" // ← 新增：导入 labels
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types" // ← 修复：导入 types (用于 Patch)
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd" // 如果需要 out-of-cluster config
 )
 
 type AgentConfig struct {
