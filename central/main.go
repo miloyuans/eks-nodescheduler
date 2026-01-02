@@ -21,6 +21,7 @@ import (
 )
 
 func main() {
+	// 使用所有 CPU 核
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	configFile := "config.yaml"
@@ -94,6 +95,7 @@ func main() {
 	<-sigCh
 	log.Println("[INFO] Shutdown signal received, initiating graceful shutdown...")
 
+	// 触发关闭
 	cancel()
 
 	// 等待所有 Goroutine 完成（最多 30 秒超时）
@@ -137,6 +139,12 @@ func validateConfig(cfg *config.GlobalConfig) error {
 			}
 			if cluster.Region == "" {
 				return fmt.Errorf("region is required for cluster %s", cluster.Name)
+			}
+			if cluster.NodeGroupPrefix == "" {
+				return fmt.Errorf("node_group_prefix is required for cluster %s", cluster.Name)
+			}
+			if len(cluster.Subnets) == 0 {
+				return fmt.Errorf("subnets are required for cluster %s", cluster.Name)
 			}
 		}
 	}

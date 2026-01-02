@@ -2,9 +2,13 @@
 package notifier
 
 import (
+	"context"
+	"fmt"
 	"log"
+	"strings"
 
-	"central/config"
+	"central/processor" // ← 新增导入 processor 处理反馈
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -26,6 +30,7 @@ func Init(cfg *config.GlobalConfig) error {
 	return nil
 }
 
+// Send 发送消息到群
 func Send(message string, chatIDs []int64) {
 	if bot == nil || len(chatIDs) == 0 {
 		log.Printf("[DEBUG] Telegram notification skipped: %s", message)
@@ -42,4 +47,39 @@ func Send(message string, chatIDs []int64) {
 			log.Printf("[INFO] Telegram sent to %d: %s", chatID, message)
 		}
 	}
+}
+
+// InitTelegramListener 启动监听 Agent 反馈
+func InitTelegramListener(botToken string, controlChatID int64) error {
+	b, err := tgbotapi.NewBotAPI(botToken)
+	if err != nil {
+		return err
+	}
+	bot = b
+
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+
+	updates := bot.GetUpdatesChan(u)
+
+	go func() {
+		for update := range updates {
+			if update.Message == nil || update.Message.Chat.ID != controlChatID {
+				continue
+			}
+
+			text := strings.TrimSpace(update.Message.Text)
+			if strings.HasSuffix(text, "Cordon completed") || strings.HasSuffix(text, "Restart completed") {
+				parts := strings.Split(text, " ")
+				if len(parts) >= 2 {
+					clusterName := strings.Trim(parts[0], "[]")
+					feedback := strings.Join(parts[1:], " ")
+					processor.HandleTelegramFeedback(clusterName, feedback)
+				}
+			}
+		}
+	}()
+
+	log.Println("[INFO] Telegram feedback listener started")
+	return nil
 }

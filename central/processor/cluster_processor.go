@@ -23,27 +23,6 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
-func CheckAndCreateDailyNodeGroups(central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(acct.AccessKey, acct.SecretKey, "")),
-		awsconfig.WithRegion(cluster.Region),
-	)
-	if err != nil {
-		log.Printf("[ERROR] AWS config failed for initial nodegroup check in %s: %v", cluster.Name, err)
-		return
-	}
-
-	eksClient := eks.NewFromConfig(awsCfg)
-
-	today := getNodeGroupName(cluster, time.Now())
-	tomorrow := getNodeGroupName(cluster, time.Now().Add(24*time.Hour))
-
-	createEmptyNodeGroupIfNotExist(eksClient, cluster, today)
-	createEmptyNodeGroupIfNotExist(eksClient, cluster, tomorrow)
-
-	log.Printf("[INFO] Initial daily nodegroup check completed for cluster %s", cluster.Name)
-}
-
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
 	defer wg.Done()
 
@@ -73,9 +52,9 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 			// 存储源数据
 			if err := storage.StoreRawReport(req.ClusterName, req); err != nil {
 				log.Printf("[ERROR] Failed to store raw report for %s: %v", req.ClusterName, err)
-			} else {
-				log.Printf("[INFO] Raw report stored for %s", req.ClusterName)
+				continue
 			}
+			log.Printf("[INFO] Raw report stored for %s", req.ClusterName)
 
 			totalNodes, totalRequestCpu, totalAllocatableCpu := calculateClusterLoad(req.NodeGroups)
 
@@ -84,7 +63,6 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 				avgUtil = float64(totalRequestCpu) / float64(totalAllocatableCpu)
 			}
 
-			// 生成事件 ID 用于去重
 			eventID := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%s-%d-%.4f-%d", req.ClusterName, req.Timestamp, avgUtil, totalNodes))))
 
 			actionTaken := false
@@ -148,6 +126,28 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 			return
 		}
 	}
+}
+
+// CheckAndCreateDailyNodeGroups 启动时检查并创建当天和明天空 nodegroup
+func CheckAndCreateDailyNodeGroups(central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(acct.AccessKey, acct.SecretKey, "")),
+		awsconfig.WithRegion(cluster.Region),
+	)
+	if err != nil {
+		log.Printf("[ERROR] AWS config failed for initial nodegroup check in %s: %v", cluster.Name, err)
+		return
+	}
+
+	eksClient := eks.NewFromConfig(awsCfg)
+
+	today := getNodeGroupName(cluster, time.Now())
+	tomorrow := getNodeGroupName(cluster, time.Now().Add(24*time.Hour))
+
+	createEmptyNodeGroupIfNotExist(eksClient, cluster, today)
+	createEmptyNodeGroupIfNotExist(eksClient, cluster, tomorrow)
+
+	log.Printf("[INFO] Initial daily nodegroup check completed for cluster %s", cluster.Name)
 }
 
 // getNodeGroupName 生成 nodegroup 名称：prefix + YYYYMMDD
