@@ -47,9 +47,30 @@ func StartHTTP(ctx context.Context, wg *sync.WaitGroup, cfg *config.GlobalConfig
 	}
 }
 
-// queryReportsHandler 查询所有集群报告数据（用于 web 页面）
+// queryReportsHandler 查询所有集群的最新上报数据（用于监控面板）
 func queryReportsHandler(w http.ResponseWriter, r *http.Request) {
-	data := storage.QueryReports()
+	if r.Method != http.MethodGet && r.Method != http.MethodOptions {
+		http.Error(w, "Only GET method allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// CORS 支持（关键！解决页面加载失败）
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	// 处理预检请求
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// 查询数据（最新 50 条）
+	data := storage.QueryAllClusterReports(50)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("[ERROR] Failed to encode reports JSON: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
 }

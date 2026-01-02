@@ -16,6 +16,7 @@ import (
 
 var clients map[string]*mongo.Client = make(map[string]*mongo.Client)
 
+// InitMongo 为每个集群初始化独立的 MongoDB 数据库
 func InitMongo(cfg *config.GlobalConfig) error {
 	for _, acct := range cfg.Accounts {
 		for _, cluster := range acct.Clusters {
@@ -52,6 +53,7 @@ func InitMongo(cfg *config.GlobalConfig) error {
 	return nil
 }
 
+// StoreReport 存储 Agent 上报的数据
 func StoreReport(clusterName string, req model.ReportRequest) error {
 	client, ok := clients[clusterName]
 	if !ok {
@@ -78,6 +80,7 @@ func StoreReport(clusterName string, req model.ReportRequest) error {
 	return nil
 }
 
+// Shutdown 优雅关闭所有 Mongo 连接
 func Shutdown() {
 	for name, client := range clients {
 		if err := client.Disconnect(context.Background()); err != nil {
@@ -88,30 +91,37 @@ func Shutdown() {
 	}
 }
 
-// QueryReports 查询所有集群的报告数据
-func QueryReports() map[string][]map[string]interface{} {
-	data := make(map[string][]map[string]interface{})
+// QueryAllClusterReports 查询所有集群的最新报告（用于监控面板）
+func QueryAllClusterReports(limit int64) map[string][]map[string]interface{} {
+	result := make(map[string][]map[string]interface{})
 
-	for name, client := range clients {
-		db := client.Database(name)
+	for clusterName, client := range clients {
+		db := client.Database(clusterName)
 		coll := db.Collection("reports")
 
-		opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(50) // 最新 50 条
+		opts := options.Find().
+			SetSort(bson.D{{Key: "createdAt", Value: -1}}). // 最新在前
+			SetLimit(limit)
 
 		cursor, err := coll.Find(context.Background(), bson.D{}, opts)
 		if err != nil {
-			log.Printf("[ERROR] Query reports failed for %s: %v", name, err)
+			log.Printf("[WARN] Query reports failed for cluster %s: %v", clusterName, err)
 			continue
 		}
 
 		var reports []map[string]interface{}
 		if err := cursor.All(context.Background(), &reports); err != nil {
-			log.Printf("[ERROR] Decode reports failed for %s: %v", name, err)
+			log.Printf("[WARN] Decode reports failed for cluster %s: %v", clusterName, err)
 			continue
 		}
 
-		data[name] = reports
+		// 为每条记录添加 cluster_name 字段，方便前端显示
+		for i := range reports {
+			reports[i]["cluster_name"] = clusterName
+		}
+
+		result[clusterName] = reports
 	}
 
-	return data
+	return result
 }
