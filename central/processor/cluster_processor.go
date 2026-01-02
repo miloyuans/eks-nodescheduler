@@ -2,9 +2,13 @@
 package processor
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +24,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+)
+
+const (
+	restartEndpoint         = "/restart"
+	restartFeedbackEndpoint = "/restart-feedback"
+	restartTimeout          = 30 * time.Minute // 等待 Agent 重启完成超时
 )
 
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
@@ -257,8 +267,9 @@ func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *aut
 	return nil
 }
 
+// sendRestartCommand 下发重启指令给 Agent
 func sendRestartCommand(cluster *config.ClusterConfig) error {
-	resp, err := http.Post(cluster.AgentEndpoint+"/restart", "application/json", bytes.NewBuffer([]byte(`{}`)))
+	resp, err := http.Post(cluster.AgentEndpoint+restartEndpoint, "application/json", bytes.NewBuffer([]byte(`{}`)))
 	if err != nil {
 		return fmt.Errorf("send restart command failed: %w", err)
 	}
@@ -270,12 +281,13 @@ func sendRestartCommand(cluster *config.ClusterConfig) error {
 	return nil
 }
 
+// waitForRestartFeedback 等待 Agent 反馈
 func waitForRestartFeedback(cluster *config.ClusterConfig) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	deadline := time.Now().Add(restartTimeout)
 
 	for time.Now().Before(deadline) {
-		resp, err := client.Post(cluster.AgentEndpoint+"/restart-feedback", "application/json", bytes.NewBuffer([]byte(`{"status":"check"}`)))
+		resp, err := client.Post(cluster.AgentEndpoint+restartFeedbackEndpoint, "application/json", bytes.NewBuffer([]byte(`{"status":"check"}`)))
 		if err == nil && resp.StatusCode == http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			var feedback struct {
