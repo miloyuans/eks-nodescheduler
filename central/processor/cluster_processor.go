@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,28 +23,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
-
-// CheckAndCreateDailyNodeGroups 启动时检查并创建当天和明天空 nodegroup
-func CheckAndCreateDailyNodeGroups(central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(acct.AccessKey, acct.SecretKey, "")),
-		awsconfig.WithRegion(cluster.Region),
-	)
-	if err != nil {
-		log.Printf("[ERROR] AWS config failed for initial nodegroup check in %s: %v", cluster.Name, err)
-		return
-	}
-
-	eksClient := eks.NewFromConfig(awsCfg)
-
-	today := getNodeGroupName(cluster, time.Now())
-	tomorrow := getNodeGroupName(cluster, time.Now().Add(24*time.Hour))
-
-	createEmptyNodeGroupIfNotExist(eksClient, cluster, today)
-	createEmptyNodeGroupIfNotExist(eksClient, cluster, tomorrow)
-
-	log.Printf("[INFO] Initial daily nodegroup check completed for cluster %s", cluster.Name)
-}
 
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
 	defer wg.Done()
@@ -74,11 +53,10 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 			// 存储源数据
 			if err := storage.StoreRawReport(req.ClusterName, req); err != nil {
 				log.Printf("[ERROR] Failed to store raw report for %s: %v", req.ClusterName, err)
-				continue
+			} else {
+				log.Printf("[INFO] Raw report stored for %s", req.ClusterName)
 			}
-			log.Printf("[INFO] Raw report stored for %s", req.ClusterName)
 
-			// 计算指标
 			totalNodes, totalRequestCpu, totalAllocatableCpu := calculateClusterLoad(req.NodeGroups)
 
 			avgUtil := 0.0
@@ -87,7 +65,7 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 			}
 
 			// 生成事件 ID 用于去重
-			eventID := generateEventID(req.ClusterName, req.Timestamp, avgUtil, totalNodes)
+			eventID := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%s-%d-%.4f-%d", req.ClusterName, req.Timestamp, avgUtil, totalNodes))))
 
 			actionTaken := false
 			eventType := ""
@@ -102,7 +80,7 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 					actionTaken = true
 					eventType = "scale_up"
 					detail = fmt.Sprintf("Added %d nodes to tomorrow group %s", addCount, tomorrowNG)
-					notifier.Send(fmt.Sprintf("[↑] Cluster %s scaled up by %d nodes (tomorrow group %s)", cluster.Name, addCount, tomorrowNG), central.GetTelegramChatIDs())
+					notifier.Send(fmt.Sprintf("[↑] Cluster %s scaled up by %d nodes", cluster.Name, addCount), central.GetTelegramChatIDs())
 				}
 			} else if avgUtil < float64(cluster.LowThreshold)/100 {
 				if time.Since(lastScaleDown["cluster"]) < time.Duration(cluster.CooldownSeconds)*time.Second {
@@ -152,13 +130,6 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	}
 }
 
-// generateEventID 生成唯一事件 ID（用于去重）
-func generateEventID(clusterName string, timestamp int64, avgUtil float64, totalNodes int) string {
-	data := fmt.Sprintf("%s-%d-%.4f-%d", clusterName, timestamp, avgUtil, totalNodes)
-	hash := md5.Sum([]byte(data))
-	return fmt.Sprintf("%x", hash)
-}
-
 // getNodeGroupName 生成 nodegroup 名称：prefix + YYYYMMDD
 func getNodeGroupName(cluster *config.ClusterConfig, t time.Time) string {
 	return cluster.NodeGroupPrefix + t.Format("20060102")
@@ -198,7 +169,7 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 	input := &eks.CreateNodegroupInput{
 		ClusterName:   aws.String(cluster.Name),
 		NodegroupName: aws.String(ngName),
-		Subnets:       cluster.Subnets, // ← 新增：必填子网
+		Subnets:       cluster.Subnets,
 		ScalingConfig: &types.NodegroupScalingConfig{
 			MinSize:     aws.Int32(0),
 			MaxSize:     aws.Int32(20),

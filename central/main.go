@@ -21,7 +21,6 @@ import (
 )
 
 func main() {
-	// 使用所有 CPU 核
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	configFile := "config.yaml"
@@ -138,9 +137,6 @@ func validateConfig(cfg *config.GlobalConfig) error {
 			}
 			if cluster.Region == "" {
 				return fmt.Errorf("region is required for cluster %s", cluster.Name)
-			}
-			if cluster.NodeGroupPrefix == "" {
-				return fmt.Errorf("node_group_prefix is required for cluster %s", cluster.Name)
 			}
 		}
 	}
