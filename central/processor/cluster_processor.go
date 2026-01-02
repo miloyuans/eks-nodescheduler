@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -29,7 +28,7 @@ import (
 const (
 	restartEndpoint         = "/restart"
 	restartFeedbackEndpoint = "/restart-feedback"
-	restartTimeout          = 30 * time.Minute // 等待 Agent 重启完成超时
+	restartTimeout          = 30 * time.Minute
 )
 
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
@@ -47,7 +46,6 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	eksClient := eks.NewFromConfig(awsCfg)
 	asgClient := autoscaling.NewFromConfig(awsCfg)
 
-	// 启动每日 nodegroup 管理
 	go manageDailyNodeGroups(ctx, eksClient, cluster)
 
 	lastScaleDown := make(map[string]time.Time)
@@ -98,12 +96,10 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	}
 }
 
-// getNodeGroupName 生成 nodegroup 名称：prefix + YYYYMMDD
 func getNodeGroupName(cluster *config.ClusterConfig, t time.Time) string {
 	return cluster.NodeGroupPrefix + t.Format("20060102")
 }
 
-// manageDailyNodeGroups 每天创建今天和明天空 nodegroup，并清理历史空组
 func manageDailyNodeGroups(ctx context.Context, client *eks.Client, cluster *config.ClusterConfig) {
 	ticker := time.NewTicker(6 * time.Hour)
 	defer ticker.Stop()
@@ -130,7 +126,7 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 		NodegroupName: aws.String(ngName),
 	})
 	if err == nil {
-		return // 已存在
+		return
 	}
 
 	log.Printf("[INFO] Creating empty nodegroup %s for cluster %s", ngName, cluster.Name)
@@ -144,7 +140,7 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 		},
 		InstanceTypes: []string{cluster.InstanceType},
 		DiskSize:      aws.Int32(int32(cluster.DiskSize)),
-		AmiType:       types.AMIFamily(cluster.AmiType),
+		AmiType:       types.AMITypes(cluster.AmiType), // 正确使用 AMITypes
 		NodeRole:      aws.String(cluster.IamRole),
 	}
 
@@ -183,7 +179,6 @@ func cleanupOldEmptyNodeGroups(client *eks.Client, cluster *config.ClusterConfig
 	}
 }
 
-// calculateClusterLoad 计算集群总节点数、总请求和总可分配 CPU
 func calculateClusterLoad(nodeGroups []model.NodeGroupData) (totalNodes int, totalRequest, totalAllocatable int64) {
 	for _, ng := range nodeGroups {
 		totalNodes += len(ng.Nodes)
@@ -195,7 +190,6 @@ func calculateClusterLoad(nodeGroups []model.NodeGroupData) (totalNodes int, tot
 	return
 }
 
-// calculateScaleUpCount 计算需要添加多少节点
 func calculateScaleUpCount(currentAvgUtil float64, currentNodes int, targetUtil float64) int {
 	if currentNodes == 0 {
 		return 1
@@ -213,12 +207,10 @@ func calculateScaleUpCount(currentAvgUtil float64, currentNodes int, targetUtil 
 	}
 }
 
-// calculateScaleDownCount 计算需要缩减多少节点（简化）
 func calculateScaleDownCount(totalNodes int, avgUtil float64) int {
-	return 1 // 示例：每次缩减 1 个
+	return 1
 }
 
-// scaleNodeGroup 调整 nodegroup DesiredSize
 func scaleNodeGroup(client *eks.Client, clusterName, ngName string, desiredSize int32) {
 	input := &eks.UpdateNodegroupConfigInput{
 		ClusterName:   aws.String(clusterName),
@@ -230,11 +222,9 @@ func scaleNodeGroup(client *eks.Client, clusterName, ngName string, desiredSize 
 	_, _ = client.UpdateNodegroupConfig(context.Background(), input)
 }
 
-// performScaleDown 执行缩容流程
 func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *autoscaling.Client, cluster *config.ClusterConfig, req model.ReportRequest, tomorrowNG string, reduceCount int) error {
 	scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(reduceCount))
 
-	// Cordon 旧节点（模拟）
 	for _, ng := range req.NodeGroups {
 		if ng.Name == tomorrowNG {
 			continue
@@ -252,7 +242,6 @@ func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *aut
 		return err
 	}
 
-	// 删除旧空组
 	for _, ng := range req.NodeGroups {
 		if ng.Name != tomorrowNG && ng.DesiredSize == 0 {
 			_, _ = eksClient.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{
@@ -267,7 +256,6 @@ func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *aut
 	return nil
 }
 
-// sendRestartCommand 下发重启指令给 Agent
 func sendRestartCommand(cluster *config.ClusterConfig) error {
 	resp, err := http.Post(cluster.AgentEndpoint+restartEndpoint, "application/json", bytes.NewBuffer([]byte(`{}`)))
 	if err != nil {
@@ -281,7 +269,6 @@ func sendRestartCommand(cluster *config.ClusterConfig) error {
 	return nil
 }
 
-// waitForRestartFeedback 等待 Agent 反馈
 func waitForRestartFeedback(cluster *config.ClusterConfig) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	deadline := time.Now().Add(restartTimeout)
