@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"agent/collector"
-	"agent/model"     // ← 修复：导入 model 包
+	"agent/model"
 	"agent/reporter"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -62,7 +62,7 @@ func main() {
 	log.Printf("[INFO] Agent starting for cluster: %s", cfg.ClusterName)
 	log.Printf("[INFO] Central endpoint: %s", cfg.CentralEndpoint)
 
-	// 初始化 Telegram Bot
+	// 初始化 Telegram Bot（仅用于接收指令和发送反馈）
 	bot, err := tgbotapi.NewBotAPI(cfg.Telegram.BotToken)
 	if err != nil {
 		log.Fatalf("[FATAL] Telegram bot init failed: %v", err)
@@ -72,7 +72,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
-	// 启动 Telegram 指令监听
+	// 启动 Telegram 指令监听（接收中心下发的重启指令）
 	wg.Add(1)
 	go listenTelegramCommands(ctx, &wg, bot, cfg.ClusterName, cfg.Telegram.ControlChatID)
 
@@ -86,29 +86,33 @@ func main() {
 		}
 	}()
 
-	// 上报处理器（只日志，不通知）
+	// 上报处理器：只打印日志，不发 Telegram 通知
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for report := range reportChan {
+			// 只打印日志，不发通知
+			log.Printf("[REPORT] Starting to send report (%d nodegroups)", len(report.NodeGroups))
+
 			if err := reporter.Report(cfg.CentralEndpoint, report); err != nil {
-				log.Printf("[ERROR] Report failed: %v", err)
+				log.Printf("[REPORT] Failed to send report: %v", err)
 			} else {
-				log.Printf("[INFO] Report sent successfully (%d nodegroups)", len(report.NodeGroups))
+				log.Printf("[REPORT] Successfully sent report (%d nodegroups)", len(report.NodeGroups))
 			}
 		}
 	}()
 
-	// 启动时立即全量上报一次
+	// 启动时立即全量上报一次（只日志）
 	log.Println("[INFO] Performing initial full collection...")
 	report, err := collector.CollectFull(cfg.ClusterName, cfg.NodeGroups)
 	if err != nil {
 		log.Printf("[ERROR] Initial collection failed: %v", err)
 	} else {
+		log.Printf("[REPORT] Initial report ready (%d nodegroups)", len(report.NodeGroups))
 		if err := reporter.Report(cfg.CentralEndpoint, report); err != nil {
-			log.Printf("[ERROR] Initial report failed: %v", err)
+			log.Printf("[REPORT] Initial report failed: %v", err)
 		} else {
-			log.Println("[INFO] Initial report sent successfully")
+			log.Println("[REPORT] Initial report sent successfully")
 		}
 	}
 
@@ -149,7 +153,7 @@ func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbota
 			if text == expectedCommand {
 				log.Printf("[RESTART] Received valid restart command for %s", clusterName)
 
-				// 发送开始通知
+				// 发送开始执行通知
 				msg := tgbotapi.NewMessage(controlChatID, fmt.Sprintf("[%s] Starting services restart...", clusterName))
 				bot.Send(msg)
 
@@ -164,8 +168,8 @@ func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbota
 func restartServices(clusterName string, bot *tgbotapi.BotAPI, controlChatID int64) {
 	log.Println("[RESTART] Executing services restart...")
 
-	// TODO: 在这里替换为你的实际重启逻辑，例如：
-	// kubectl rollout restart deployment/my-app -n my-ns
+	// TODO: 替换为你的实际重启逻辑，例如：
+	// kubectl rollout restart deployment/... -n ...
 	// 或执行自定义脚本
 
 	// 模拟重启耗时
@@ -179,7 +183,7 @@ func restartServices(clusterName string, bot *tgbotapi.BotAPI, controlChatID int
 		status = "failed"
 	}
 
-	// 发送反馈（与中心规则一致）
+	// 仅在执行完成后发送反馈
 	feedback := fmt.Sprintf("[%s] Restart %s", clusterName, status)
 	msg := tgbotapi.NewMessage(controlChatID, feedback)
 	if _, err := bot.Send(msg); err != nil {
