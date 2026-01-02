@@ -46,7 +46,7 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	}
 
 	eksClient := eks.NewFromConfig(awsCfg)
-	asgClient := autoscaling.NewFromConfig(awsCfg)
+	//asgClient := autoscaling.NewFromConfig(awsCfg)
 
 	// 启动每日 nodegroup 管理
 	go manageDailyNodeGroups(ctx, eksClient, cluster)
@@ -333,7 +333,7 @@ func scaleNodeGroup(client *eks.Client, clusterName, ngName string, desiredSize 
 }
 
 // performScaleDown 执行缩容流程
-func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *autoscaling.Client, cluster *config.ClusterConfig, req model.ReportRequest, tomorrowNG string, reduceCount int) error {
+func performScaleDown(ctx context.Context, eksClient *eks.Client, cluster *config.ClusterConfig, req model.ReportRequest, tomorrowNG string, reduceCount int) error {
 	scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(reduceCount))
 
 	// Cordon 旧节点（模拟）
