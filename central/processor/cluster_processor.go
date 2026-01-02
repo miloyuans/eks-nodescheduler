@@ -191,13 +191,14 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 		NodegroupName: aws.String(ngName),
 	})
 	if err == nil {
-		return
+		return // 已存在
 	}
 
 	log.Printf("[INFO] Creating empty nodegroup %s for cluster %s", ngName, cluster.Name)
 	input := &eks.CreateNodegroupInput{
 		ClusterName:   aws.String(cluster.Name),
 		NodegroupName: aws.String(ngName),
+		Subnets:       cluster.Subnets, // ← 新增：必填子网
 		ScalingConfig: &types.NodegroupScalingConfig{
 			MinSize:     aws.Int32(0),
 			MaxSize:     aws.Int32(20),
@@ -212,8 +213,9 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 	_, err = client.CreateNodegroup(context.Background(), input)
 	if err != nil {
 		log.Printf("[ERROR] Failed to create nodegroup %s: %v", ngName, err)
-		notifier.Send(fmt.Sprintf("[ERROR] Failed to create nodegroup %s in %s", ngName, cluster.Name), nil)
+		notifier.Send(fmt.Sprintf("[ERROR] Failed to create nodegroup %s in %s: %v", ngName, cluster.Name, err), nil)
 	} else {
+		log.Printf("[INFO] Successfully created empty nodegroup %s", ngName)
 		notifier.Send(fmt.Sprintf("[CREATED] Empty nodegroup %s created for %s", ngName, cluster.Name), nil)
 	}
 }
