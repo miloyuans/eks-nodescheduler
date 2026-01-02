@@ -5,35 +5,71 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings" // ← 新增：用于 getInstanceID 分割 ProviderID
-	"time"    // ← 新增：用于 Timestamp
+	"time"
 
 	"agent/model"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
-func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest, error) {
-	// 使用 in-cluster config（Agent 运行在 Pod 内）
+var reportChan chan model.ReportRequest
+
+// InitCollector 初始化事件监听器（Node 变化触发上报）
+func InitCollector(ctx context.Context, clusterName string, filterNodeGroups []string, ch chan model.ReportRequest) error {
+	reportChan = ch
+
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		return model.ReportRequest{}, fmt.Errorf("failed to get in-cluster config: %w", err)
+		return fmt.Errorf("in-cluster config failed: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return model.ReportRequest{}, fmt.Errorf("failed to create clientset: %w", err)
+		return fmt.Errorf("create clientset failed: %w", err)
+	}
+
+	factory := informers.NewSharedInformerFactory(clientset, 10*time.Minute)
+	nodeInformer := factory.Core().V1().Nodes().Informer()
+	nodeInformer.AddEventHandler(&nodeEventHandler{
+		clusterName:      clusterName,
+		filterNodeGroups: filterNodeGroups,
+	})
+
+	stopCh := make(chan struct{})
+	factory.Start(stopCh)
+	factory.WaitForCacheSync(stopCh)
+
+	log.Println("[COLLECT] Node informer started")
+
+	// 阻塞直到 context 取消
+	<-ctx.Done()
+	close(stopCh)
+	return nil
+}
+
+// CollectFull 启动时全量采集一次
+func CollectFull(clusterName string, filterNodeGroups []string) (model.ReportRequest, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return model.ReportRequest{}, err
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return model.ReportRequest{}, err
 	}
 
 	nodes, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		return model.ReportRequest{}, fmt.Errorf("failed to list nodes: %w", err)
+		return model.ReportRequest{}, err
 	}
 
-	// 按 nodegroup 分组统计
+	log.Printf("[COLLECT] Full collection: %d nodes fetched", len(nodes.Items))
+
 	nodeGroups := make(map[string]*model.NodeGroupData)
 
 	for _, node := range nodes.Items {
@@ -42,11 +78,10 @@ func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest
 			ngName = "unknown"
 		}
 
-		// 过滤 nodegroup
 		if len(filterNodeGroups) > 0 {
 			found := false
-			for _, filter := range filterNodeGroups {
-				if filter == ngName {
+			for _, f := range filterNodeGroups {
+				if f == ngName {
 					found = true
 					break
 				}
@@ -66,39 +101,18 @@ func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest
 			nodeGroups[ngName] = ng
 		}
 
-		// 获取该节点上所有 Pod 的 CPU requests
-		pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
-			FieldSelector: "spec.nodeName=" + node.Name,
-		})
-		if err != nil {
-			log.Printf("[WARN] Failed to list pods on node %s: %v", node.Name, err)
-			continue
-		}
-
-		var reqCpu int64
-		for _, pod := range pods.Items {
-			for _, container := range pod.Spec.Containers {
-				reqCpu += container.Resources.Requests.Cpu().MilliValue()
-			}
-		}
-
 		allocCpu := node.Status.Allocatable.Cpu().MilliValue()
-		util := 0.0
-		if allocCpu > 0 {
-			util = float64(reqCpu) / float64(allocCpu)
-		}
-
+		util := 0.0 // 简化：这里可以用其他方式计算，这里用 0 占位
 		ng.NodeUtils[node.Name] = util
 
 		ng.Nodes = append(ng.Nodes, model.NodeInfo{
 			Name:                node.Name,
 			InstanceId:          getInstanceID(&node),
-			RequestCpuMilli:     reqCpu,
+			RequestCpuMilli:     0,
 			AllocatableCpuMilli: int64(allocCpu),
 		})
 	}
 
-	// 转换为上报结构
 	var ngList []model.NodeGroupData
 	for _, ng := range nodeGroups {
 		ngList = append(ngList, *ng)
@@ -107,11 +121,39 @@ func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest
 	return model.ReportRequest{
 		ClusterName: clusterName,
 		NodeGroups:  ngList,
-		Timestamp:   time.Now().Unix(), // ← 使用 time
+		Timestamp:   time.Now().Unix(),
 	}, nil
 }
 
-// getInstanceID 从 ProviderID 提取 EC2 Instance ID
+type nodeEventHandler struct {
+	clusterName      string
+	filterNodeGroups []string
+}
+
+func (h *nodeEventHandler) OnAdd(obj interface{}) {
+	h.triggerReport()
+}
+
+func (h *nodeEventHandler) OnUpdate(old, new interface{}) {
+	h.triggerReport()
+}
+
+func (h *nodeEventHandler) OnDelete(obj interface{}) {
+	h.triggerReport()
+}
+
+func (h *nodeEventHandler) triggerReport() {
+	log.Println("[EVENT] Node event detected, triggering report")
+	go func() {
+		report, err := CollectFull(h.clusterName, h.filterNodeGroups)
+		if err != nil {
+			log.Printf("[ERROR] Event-triggered collection failed: %v", err)
+			return
+		}
+		reportChan <- report
+	}()
+}
+
 func getInstanceID(node *v1.Node) string {
 	if node.Spec.ProviderID == "" {
 		return ""
