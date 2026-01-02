@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings" // ← 新增：用于 getInstanceID 分割 ProviderID
 	"time"
 
 	"agent/model"
@@ -14,11 +15,13 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache" // ← 正确导入 cache
 )
 
 var reportChan chan model.ReportRequest
 
-func InitCollector(ctx context.Context, clusterName string, ch chan model.ReportRequest) error {
+// InitCollector 初始化事件监听器（Node 变化触发上报）
+func InitCollector(ctx context.Context, clusterName string, filterNodeGroups []string, ch chan model.ReportRequest) error {
 	reportChan = ch
 
 	config, err := rest.InClusterConfig()
@@ -33,21 +36,26 @@ func InitCollector(ctx context.Context, clusterName string, ch chan model.Report
 
 	factory := informers.NewSharedInformerFactory(clientset, 10*time.Minute)
 	nodeInformer := factory.Core().V1().Nodes().Informer()
-	nodeInformer.AddEventHandler(&nodeEventHandler{clusterName: clusterName})
+
+	// 正确实现 ResourceEventHandler 接口
+	nodeInformer.AddEventHandler(&nodeEventHandler{
+		clusterName:      clusterName,
+		filterNodeGroups: filterNodeGroups,
+	})
 
 	stopCh := make(chan struct{})
 	factory.Start(stopCh)
 	factory.WaitForCacheSync(stopCh)
 
-	log.Println("[COLLECT] Node informer started")
+	log.Println("[COLLECT] Node informer started, event-driven collection enabled")
 
 	<-ctx.Done()
 	close(stopCh)
 	return nil
 }
 
-// CollectFull 启动时全量采集
-func CollectFull(clusterName string) (model.ReportRequest, error) {
+// CollectFull 启动时全量采集一次
+func CollectFull(clusterName string, filterNodeGroups []string) (model.ReportRequest, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return model.ReportRequest{}, err
@@ -63,7 +71,7 @@ func CollectFull(clusterName string) (model.ReportRequest, error) {
 		return model.ReportRequest{}, err
 	}
 
-	log.Printf("[COLLECT] Full collection: %d nodes", len(nodes.Items))
+	log.Printf("[COLLECT] Full collection: %d nodes fetched", len(nodes.Items))
 
 	nodeGroups := make(map[string]*model.NodeGroupData)
 
@@ -71,6 +79,19 @@ func CollectFull(clusterName string) (model.ReportRequest, error) {
 		ngName := node.Labels["eks.amazonaws.com/nodegroup"]
 		if ngName == "" {
 			ngName = "unknown"
+		}
+
+		if len(filterNodeGroups) > 0 {
+			found := false
+			for _, f := range filterNodeGroups {
+				if f == ngName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
 		}
 
 		ng, ok := nodeGroups[ngName]
@@ -84,7 +105,7 @@ func CollectFull(clusterName string) (model.ReportRequest, error) {
 		}
 
 		allocCpu := node.Status.Allocatable.Cpu().MilliValue()
-		util := 0.0 // 简化：实际可通过 metrics-server 获取
+		util := 0.0 // 简化：实际可通过 metrics-server 获取 Pod requests
 		ng.NodeUtils[node.Name] = util
 
 		ng.Nodes = append(ng.Nodes, model.NodeInfo{
@@ -107,28 +128,33 @@ func CollectFull(clusterName string) (model.ReportRequest, error) {
 	}, nil
 }
 
+// nodeEventHandler 实现 cache.ResourceEventHandler 接口
 type nodeEventHandler struct {
-	clusterName string
+	clusterName      string
+	filterNodeGroups []string
 }
 
-func (h *nodeEventHandler) OnAdd(obj interface{}) {
+// OnAdd 实现接口（签名必须包含 isInInitialList bool）
+func (h *nodeEventHandler) OnAdd(obj interface{}, isInInitialList bool) {
 	h.triggerReport()
 }
 
+// OnUpdate 实现接口
 func (h *nodeEventHandler) OnUpdate(oldObj, newObj interface{}) {
 	h.triggerReport()
 }
 
+// OnDelete 实现接口
 func (h *nodeEventHandler) OnDelete(obj interface{}) {
 	h.triggerReport()
 }
 
 func (h *nodeEventHandler) triggerReport() {
-	log.Println("[EVENT] Node change detected, triggering report")
+	log.Println("[EVENT] Node event detected, triggering report")
 	go func() {
-		report, err := CollectFull(h.clusterName)
+		report, err := CollectFull(h.clusterName, h.filterNodeGroups)
 		if err != nil {
-			log.Printf("[ERROR] Event collection failed: %v", err)
+			log.Printf("[ERROR] Event-triggered collection failed: %v", err)
 			return
 		}
 		reportChan <- report
