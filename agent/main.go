@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent/collector"
+	"agent/model"     // ← 修复：导入 model 包
 	"agent/reporter"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -98,7 +99,7 @@ func main() {
 		}
 	}()
 
-	// 启动时全量上报一次
+	// 启动时立即全量上报一次
 	log.Println("[INFO] Performing initial full collection...")
 	report, err := collector.CollectFull(cfg.ClusterName, cfg.NodeGroups)
 	if err != nil {
@@ -159,16 +160,19 @@ func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbota
 	}
 }
 
-// restartServices 执行重启逻辑（这里模拟，实际替换为你的重启命令）
+// restartServices 执行重启逻辑（请替换为你的实际重启命令）
 func restartServices(clusterName string, bot *tgbotapi.BotAPI, controlChatID int64) {
-	// TODO: 替换为实际重启逻辑，例如 kubectl rollout restart
 	log.Println("[RESTART] Executing services restart...")
+
+	// TODO: 在这里替换为你的实际重启逻辑，例如：
+	// kubectl rollout restart deployment/my-app -n my-ns
+	// 或执行自定义脚本
 
 	// 模拟重启耗时
 	time.Sleep(30 * time.Second)
 
-	// 假设成功
-	success := true // 实际根据执行结果判断
+	// 假设成功（实际根据执行结果判断）
+	success := true
 
 	status := "success"
 	if !success {
