@@ -3,7 +3,6 @@ package processor
 
 import (
 	"context"
-	"crypto/md5"
 	"fmt"
 	"log"
 	"sync"
@@ -13,7 +12,6 @@ import (
 	"central/core"
 	"central/model"
 	"central/notifier"
-	"central/storage"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -22,6 +20,28 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
+
+// CheckAndCreateDailyNodeGroups 启动时检查并创建当天和明天空 nodegroup
+func CheckAndCreateDailyNodeGroups(central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(acct.AccessKey, acct.SecretKey, "")),
+		awsconfig.WithRegion(cluster.Region),
+	)
+	if err != nil {
+		log.Printf("[ERROR] AWS config failed for initial nodegroup check in %s: %v", cluster.Name, err)
+		return
+	}
+
+	eksClient := eks.NewFromConfig(awsCfg)
+
+	today := getNodeGroupName(cluster, time.Now())
+	tomorrow := getNodeGroupName(cluster, time.Now().Add(24*time.Hour))
+
+	createEmptyNodeGroupIfNotExist(eksClient, cluster, today)
+	createEmptyNodeGroupIfNotExist(eksClient, cluster, tomorrow)
+
+	log.Printf("[INFO] Initial daily nodegroup check completed for cluster %s", cluster.Name)
+}
 
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
 	defer wg.Done()
