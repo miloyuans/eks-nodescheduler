@@ -20,7 +20,8 @@ func main() {
 		configFile = os.Args[1]
 	}
 
-	cfg, err := LoadConfig(configFile)
+	// 加载配置
+	cfg, err := LoadConfig(configFile) // ← 现在 LoadConfig 已定义在 config.go
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to load config %s: %v", configFile, err)
 	}
