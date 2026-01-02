@@ -1,0 +1,4 @@
+central_endpoint: "http://central-server:8080/report"  # 中心程序 /report 地址
+report_interval_seconds: 300  # 上报间隔，5分钟
+cluster_name: "prod-eks-us"   # 本集群名称，必须与中心配置一致
+node_groups: []               # 空 = 上报所有；填入名称过滤，如 ["ng-workers", "ng-gpu"]
