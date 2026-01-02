@@ -87,3 +87,31 @@ func Shutdown() {
 		}
 	}
 }
+
+// QueryReports 查询所有集群的报告数据
+func QueryReports() map[string][]map[string]interface{} {
+	data := make(map[string][]map[string]interface{})
+
+	for name, client := range clients {
+		db := client.Database(name)
+		coll := db.Collection("reports")
+
+		opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(50) // 最新 50 条
+
+		cursor, err := coll.Find(context.Background(), bson.D{}, opts)
+		if err != nil {
+			log.Printf("[ERROR] Query reports failed for %s: %v", name, err)
+			continue
+		}
+
+		var reports []map[string]interface{}
+		if err := cursor.All(context.Background(), &reports); err != nil {
+			log.Printf("[ERROR] Decode reports failed for %s: %v", name, err)
+			continue
+		}
+
+		data[name] = reports
+	}
+
+	return data
+}
