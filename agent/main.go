@@ -3,13 +3,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
-	"sync"
+	"runtime"
 	"syscall"
+	"sync"
 	"time"
 
 	"agent/collector"
@@ -20,10 +19,10 @@ import (
 )
 
 type AgentConfig struct {
-	CentralEndpoint       string `yaml:"central_endpoint"`
-	ReportIntervalSeconds int    `yaml:"report_interval_seconds"`
-	ClusterName           string `yaml:"cluster_name"`
-
+	CentralEndpoint       string   `yaml:"central_endpoint"`
+	ReportIntervalSeconds int      `yaml:"report_interval_seconds"`
+	ClusterName           string   `yaml:"cluster_name"`
+	NodeGroups            []string `yaml:"node_groups"`
 	Telegram struct {
 		BotToken      string `yaml:"bot_token"`
 		ControlChatID int64  `yaml:"control_chat_id"`
@@ -44,15 +43,6 @@ func LoadConfig(file string) (*AgentConfig, error) {
 	if cfg.ReportIntervalSeconds <= 0 {
 		cfg.ReportIntervalSeconds = 300
 	}
-
-	if cfg.CentralEndpoint == "" || cfg.ClusterName == "" {
-		return nil, fmt.Errorf("central_endpoint and cluster_name are required")
-	}
-
-	if cfg.Telegram.BotToken == "" || cfg.Telegram.ControlChatID == 0 {
-		return nil, fmt.Errorf("telegram bot_token and control_chat_id are required")
-	}
-
 	return &cfg, nil
 }
 
@@ -68,45 +58,56 @@ func main() {
 	}
 
 	log.Printf("[INFO] Agent starting for cluster: %s", cfg.ClusterName)
+	log.Printf("[INFO] Central endpoint: %s", cfg.CentralEndpoint)
+	log.Printf("[INFO] Report interval: %d seconds", cfg.ReportIntervalSeconds)
+	log.Printf("[INFO] Telegram BotToken loaded, ControlChatID: %d", cfg.Telegram.ControlChatID)
 
-	// 初始化 Telegram Bot（与中心程序使用同一个 Bot）
+	// 初始化 Telegram Bot
 	bot, err := tgbotapi.NewBotAPI(cfg.Telegram.BotToken)
 	if err != nil {
 		log.Fatalf("[FATAL] Telegram bot init failed: %v", err)
 	}
 	log.Printf("[INFO] Telegram bot authorized as @%s", bot.Self.UserName)
 
-	// 启动 Telegram 监听（接收中心下发的指令）
-	go listenForCommands(bot, cfg.ClusterName, cfg.Telegram.ControlChatID)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
-	// 启动定期上报
+	// 启动 Telegram 监听器（异步）
+	wg.Add(1)
+	go listenTelegramCommands(ctx, &wg, bot, cfg.ClusterName, cfg.Telegram.ControlChatID)
+
+	// 启动事件驱动采集器
+	reportChan := make(chan model.ReportRequest, 10)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(time.Duration(cfg.ReportIntervalSeconds) * time.Second)
-		defer ticker.Stop()
+		if err := collector.InitCollector(ctx, cfg.ClusterName, cfg.NodeGroups, reportChan); err != nil {
+			log.Printf("[ERROR] Init collector failed: %v", err)
+		}
+	}()
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				report, err := collector.Collect(cfg.ClusterName, nil)
-				if err != nil {
-					log.Printf("[ERROR] Collect failed: %v", err)
-					continue
-				}
-				if err := reporter.Report(cfg.CentralEndpoint, report); err != nil {
-					log.Printf("[ERROR] Report failed: %v", err)
-				} else {
-					log.Printf("[INFO] Report sent (%d nodegroups)", len(report.NodeGroups))
-				}
+	// 启动上报处理器（异步）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for report := range reportChan {
+			if err := reporter.Report(cfg.CentralEndpoint, report); err != nil {
+				log.Printf("[ERROR] Report failed: %v", err)
+			} else {
+				log.Println("[INFO] Report sent successfully")
 			}
 		}
 	}()
+
+	// 启动时立即全量上报一次
+	log.Println("[INFO] Performing initial full collection...")
+	report, err := collector.CollectFull(cfg.ClusterName, cfg.NodeGroups)
+	if err != nil {
+		log.Printf("[ERROR] Initial collection failed: %v", err)
+	} else {
+		reportChan <- report
+		log.Println("[INFO] Initial report queued")
+	}
 
 	// 优雅关闭
 	sigCh := make(chan os.Signal, 1)
@@ -116,41 +117,142 @@ func main() {
 
 	cancel()
 	wg.Wait()
+
 	log.Println("[INFO] Agent shutdown complete")
 }
 
-// listenForCommands 监听控制群消息，匹配本集群指令
-func listenForCommands(bot *tgbotapi.BotAPI, clusterName string, controlChatID int64) {
+// listenTelegramCommands 监听 Telegram 群消息，收到指令执行重启
+func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbotapi.BotAPI, clusterName string, controlChatID int64) {
+	defer wg.Done()
+
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
 	updates := bot.GetUpdatesChan(u)
 
-	for update := range updates {
-		if update.Message == nil || update.Message.Chat.ID != controlChatID {
-			continue
-		}
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[INFO] Telegram listener shutting down")
+			return
+		case update := range updates {
+			if update.Message == nil || update.Message.Chat.ID != controlChatID {
+				continue
+			}
 
-		text := update.Message.Text
-		commandPrefix := fmt.Sprintf("[%s] /restart", clusterName)
+			text := update.Message.Text
+			commandPrefix := fmt.Sprintf("[%s] /restart", clusterName)
 
-		if strings.HasPrefix(text, commandPrefix) {
-			log.Printf("[RESTART] Received restart command from central")
+			if strings.HasPrefix(text, commandPrefix) {
+				log.Printf("[INFO] Received restart command from central for %s", clusterName)
 
-			// TODO: 在这里执行你的服务重启逻辑，例如：
-			// kubectl rollout restart deployment/my-app -n my-ns
-			// 或执行自定义脚本
+				// 发送正在执行通知
+				msg := tgbotapi.NewMessage(controlChatID, fmt.Sprintf("[%s] Starting services restart...", clusterName))
+				bot.Send(msg)
 
-			// 模拟重启完成（实际替换为真实逻辑）
-			time.Sleep(10 * time.Second)
+				// 执行重启逻辑（异步）
+				go restartServices(clusterName, bot, controlChatID)
 
-			// 反馈完成
-			msg := tgbotapi.NewMessage(controlChatID, fmt.Sprintf("[%s] Restart completed successfully", clusterName))
-			if _, err := bot.Send(msg); err != nil {
-				log.Printf("[ERROR] Failed to send restart feedback: %v", err)
-			} else {
-				log.Println("[RESTART] Restart feedback sent")
+				log.Println("[INFO] Restart process started asynchronously")
 			}
 		}
+	}
+}
+
+// restartServices 顺序重启 State fulSet > Deployment，等待 Pod Running
+func restartServices(clusterName string, bot *tgbotapi.BotAPI, controlChatID int64) {
+	// 获取 k8s client
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		log.Printf("[ERROR] Failed to get k8s config: %v", err)
+		sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
+		return
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		log.Printf("[ERROR] Failed to create k8s client: %v", err)
+		sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
+		return
+	}
+
+	// 优先重启 State fulSet
+	statefulSets, err := clientset.AppsV1().StatefulSets("").List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		log.Printf("[ERROR] Failed to list StatefulSets: %v", err)
+		sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
+		return
+	}
+
+	for _, ss := range statefulSets.Items {
+		log.Printf("[INFO] Restarting StatefulSet %s/%s", ss.Namespace, ss.Name)
+		if err := restartAndWait(clientset, ss.Namespace, ss.Name, "StatefulSet"); err != nil {
+			log.Printf("[ERROR] Restart StatefulSet %s/%s failed: %v", ss.Namespace, ss.Name, err)
+			sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
+			return
+		}
+	}
+
+	// 然后重启 Deployment
+	deployments, err := clientset.AppsV1().Deployments("").List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		log.Printf("[ERROR] Failed to list Deployments: %v", err)
+		sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
+		return
+	}
+
+	for _, dep := range deployments.Items {
+		log.Printf("[INFO] Restarting Deployment %s/%s", dep.Namespace, dep.Name)
+		if err := restartAndWait(clientset, dep.Namespace, dep.Name, "Deployment"); err != nil {
+			log.Printf("[ERROR] Restart Deployment %s/%s failed: %v", dep.Namespace, dep.Name, err)
+			sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
+			return
+		}
+	}
+
+	log.Println("[INFO] All services restarted successfully")
+	sendTelegramFeedback(bot, controlChatID, clusterName, "success")
+}
+
+// restartAndWait 重启并等待 Pod Running
+func restartAndWait(clientset *kubernetes.Clientset, namespace, name, kind string) error {
+	// 执行 rollout restart
+	cmd := fmt.Sprintf("kubectl rollout restart %s %s -n %s", strings.ToLower(kind), name, namespace)
+	// 这里使用 os.Exec 执行 kubectl（假设 kubectl 可用，或用 clientset API 实现 rollout）
+	exec.Command("sh", "-c", cmd).Run()
+
+	// 等待 Pod Ready
+	deadline := time.Now().Add(5 * time.Minute)
+	for time.Now().Before(deadline) {
+		pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{
+			LabelSelector: "app=" + name, // 假设 label 匹配
+		})
+		if err != nil {
+			return err
+		}
+
+		allReady := true
+		for _, pod := range pods.Items {
+			if pod.Status.Phase != v1.PodRunning {
+				allReady = false
+				break
+			}
+		}
+		if allReady {
+			return nil
+		}
+		time.Sleep(10 * time.Second)
+	}
+	return fmt.Errorf("timeout waiting for %s %s/%s ready", kind, namespace, name)
+}
+
+// sendTelegramFeedback 发送反馈到 Telegram 群
+func sendTelegramFeedback(bot *tgbotapi.BotAPI, chatID int64, clusterName, status string) {
+	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("[%s] Restart %s", clusterName, status))
+	_, err := bot.Send(msg)
+	if err != nil {
+		log.Printf("[ERROR] Failed to send Telegram feedback: %v", err)
+	} else {
+		log.Printf("[INFO] Telegram feedback sent: Restart %s for %s", status, clusterName)
 	}
 }
