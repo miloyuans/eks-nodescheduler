@@ -15,13 +15,14 @@ import (
 	"central/config"
 	"central/core"
 	"central/notifier"
-	"central/processor"
+	"central/processor" // ← 新增：导入 processor 包
 	"central/server"
 	"central/storage"
-	"central/telegramlistener" // ← 新增：独立监听器
+	"central/telegramlistener" // 新增：独立监听器
 )
 
 func main() {
+	// 使用所有 CPU 核
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	configFile := "config.yaml"
@@ -34,22 +35,26 @@ func main() {
 		log.Fatalf("[FATAL] Failed to load config %s: %v", configFile, err)
 	}
 
+	// 配置校验
 	if err := validateConfig(cfg); err != nil {
 		log.Fatalf("[FATAL] Config validation failed: %v", err)
 	}
 	log.Println("[INFO] Config loaded and validated successfully")
 
+	// 初始化 Telegram 通知
 	if err := notifier.Init(cfg); err != nil {
 		log.Printf("[WARN] Telegram init failed: %v (notifications disabled)", err)
 	} else {
 		log.Println("[INFO] Telegram notifier initialized")
 	}
 
+	// 初始化 MongoDB
 	if err := storage.InitMongo(cfg); err != nil {
 		log.Fatalf("[FATAL] MongoDB initialization failed: %v", err)
 	}
 	log.Println("[INFO] MongoDB initialized for all clusters")
 
+	// 创建核心实例
 	central := core.New(cfg)
 
 	// 启动时检查并创建当天和明天空 nodegroup
@@ -63,6 +68,7 @@ func main() {
 	}
 	log.Println("[INFO] Initial daily nodegroup check completed")
 
+	// 上下文用于优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
@@ -90,13 +96,16 @@ func main() {
 
 	log.Println("[INFO] Central server started successfully")
 
+	// 等待中断信号
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	log.Println("[INFO] Shutdown signal received, initiating graceful shutdown...")
 
+	// 触发关闭
 	cancel()
 
+	// 等待所有 Goroutine 完成（最多 30 秒超时）
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
