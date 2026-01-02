@@ -6,24 +6,26 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
-	"sync" // ← 新增：用于 sync.WaitGroup
+	"time"
 
 	"agent/collector"
-	"agent/model" // ← 新增：model.ReportRequest 类型
+	"agent/model"
 	"agent/reporter"
+	"agent/telegram"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"gopkg.in/yaml.v3"
 )
 
 type AgentConfig struct {
-	CentralEndpoint       string   `yaml:"central_endpoint"`
-	ReportIntervalSeconds int      `yaml:"report_interval_seconds"`
-	ClusterName           string   `yaml:"cluster_name"`
-	NodeGroups            []string `yaml:"node_groups"` // 用于过滤上报的 nodegroup
+	CentralEndpoint       string `yaml:"central_endpoint"`
+	ReportIntervalSeconds int    `yaml:"report_interval_seconds"`
+	ClusterName           string `yaml:"cluster_name"`
+	NodeGroups            []string `yaml:"node_groups"`
 	Telegram struct {
 		BotToken      string `yaml:"bot_token"`
 		ControlChatID int64  `yaml:"control_chat_id"`
@@ -71,45 +73,45 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
-	// 启动 Telegram 监听
+	// 启动 Telegram 指令监听
 	wg.Add(1)
-	go listenTelegramCommands(ctx, &wg, bot, cfg.ClusterName, cfg.Telegram.ControlChatID)
+	go telegram.ListenCommands(ctx, &wg, bot, cfg.ClusterName, cfg.Telegram.ControlChatID)
 
 	// 启动事件驱动采集
 	reportChan := make(chan model.ReportRequest, 10)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// 正确传入 filterNodeGroups
 		if err := collector.InitCollector(ctx, cfg.ClusterName, cfg.NodeGroups, reportChan); err != nil {
 			log.Printf("[ERROR] Init collector failed: %v", err)
 		}
 	}()
 
-	// 上报处理器
+	// 上报处理器（只日志，不通知）
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for report := range reportChan {
+			log.Printf("[REPORT] Starting to send report (%d nodegroups)", len(report.NodeGroups))
 			if err := reporter.Report(cfg.CentralEndpoint, report); err != nil {
 				log.Printf("[ERROR] Report failed: %v", err)
 			} else {
-				log.Println("[INFO] Report sent successfully")
+				log.Printf("[REPORT] Report sent successfully (%d nodegroups)", len(report.NodeGroups))
 			}
 		}
 	}()
 
 	// 启动时立即全量上报一次
 	log.Println("[INFO] Performing initial full collection...")
-	// 正确传入 filterNodeGroups
 	report, err := collector.CollectFull(cfg.ClusterName, cfg.NodeGroups)
 	if err != nil {
 		log.Printf("[ERROR] Initial collection failed: %v", err)
 	} else {
+		log.Printf("[REPORT] Initial report ready (%d nodegroups)", len(report.NodeGroups))
 		if err := reporter.Report(cfg.CentralEndpoint, report); err != nil {
 			log.Printf("[ERROR] Initial report failed: %v", err)
 		} else {
-			log.Println("[INFO] Initial report sent successfully")
+			log.Println("[REPORT] Initial report sent successfully")
 		}
 	}
 
@@ -123,61 +125,4 @@ func main() {
 	wg.Wait()
 
 	log.Println("[INFO] Agent shutdown complete")
-}
-
-// listenTelegramCommands 监听 Telegram 群消息，收到指令执行重启
-func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbotapi.BotAPI, clusterName string, controlChatID int64) {
-	defer wg.Done()
-
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-
-	updates := bot.GetUpdatesChan(u)
-
-	expectedCommand := fmt.Sprintf("[%s] /restart", clusterName)
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("[INFO] Telegram listener shutting down")
-			return
-		case update := <-updates:
-			if update.Message == nil || update.Message.Chat.ID != controlChatID {
-				continue
-			}
-
-			text := strings.TrimSpace(update.Message.Text)
-			if text == expectedCommand {
-				log.Printf("[RESTART] Received valid restart command for %s", clusterName)
-
-				msg := tgbotapi.NewMessage(controlChatID, fmt.Sprintf("[%s] Starting services restart...", clusterName))
-				bot.Send(msg)
-
-				go restartServices(clusterName, bot, controlChatID)
-			}
-		}
-	}
-}
-
-// restartServices 执行重启逻辑（请替换为实际命令）
-func restartServices(clusterName string, bot *tgbotapi.BotAPI, controlChatID int64) {
-	log.Println("[RESTART] Executing services restart...")
-
-	// TODO: 替换为实际重启逻辑，例如 kubectl rollout restart
-	// time.Sleep(30 * time.Second) // 模拟
-
-	success := true // 实际根据结果判断
-
-	status := "success"
-	if !success {
-		status = "failed"
-	}
-
-	feedback := fmt.Sprintf("[%s] Restart %s", clusterName, status)
-	msg := tgbotapi.NewMessage(controlChatID, feedback)
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("[ERROR] Failed to send restart feedback: %v", err)
-	} else {
-		log.Printf("[RESTART] Feedback sent: %s", feedback)
-	}
 }
