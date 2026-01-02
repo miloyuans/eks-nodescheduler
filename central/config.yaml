@@ -14,14 +14,14 @@ mongo:
   ttl_days: 7
 
 telegram:
-  bot_token: "YOUR_BOT_TOKEN_HERE"
+  bot_token: "YOUR_BOT_TOKEN"
   chat_ids:
-    - -1001234567890   # 你的通知群 ID
+    - -1001234567890
 
 accounts:
   - account_id: "123456789012"
     access_key: "AKIA..."
-    secret_key: "xxxxxx"
+    secret_key: "your-secret"
     clusters:
       - name: "prod-eks-us"
         region: "us-west-2"
@@ -29,4 +29,11 @@ accounts:
         low_threshold: 30
         max_threshold: 70
         cooldown_seconds: 600
-        node_groups: []   # 空表示处理所有
+        node_groups: []                     # 空 = 处理所有
+        node_group_prefix: "autoscaler-"    # 生成 autoscaler-20260102
+        instance_type: "t3.medium"
+        disk_size: 20
+        ami_type: "AL2_x86_64"
+        iam_role: "arn:aws:iam::123456789012:role/EKSNodeRole"
+        util_threshold: 0.5                 # 50%
+        agent_endpoint: "http://agent-prod-eks-us:8080"

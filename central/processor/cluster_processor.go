@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -23,10 +22,6 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
-type AgentFeedback struct {
-	Status string `json:"status"`
-}
-
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
 	defer wg.Done()
 
@@ -42,6 +37,7 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	eksClient := eks.NewFromConfig(awsCfg)
 	asgClient := autoscaling.NewFromConfig(awsCfg)
 
+	// 启动每日 nodegroup 管理
 	go manageDailyNodeGroups(ctx, eksClient, cluster)
 
 	lastScaleDown := make(map[string]time.Time)
@@ -50,9 +46,8 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	for {
 		select {
 		case req := <-ch:
-			log.Printf("[INFO] Processing report for cluster %s with %d nodegroups", req.ClusterName, len(req.NodeGroups))
+			log.Printf("[INFO] Received report from cluster %s with %d nodegroups", req.ClusterName, len(req.NodeGroups))
 
-			todayNG := getNodeGroupName(cluster, time.Now())
 			tomorrowNG := getNodeGroupName(cluster, time.Now().Add(24*time.Hour))
 
 			totalNodes, totalRequestCpu, totalAllocatableCpu := calculateClusterLoad(req.NodeGroups)
@@ -65,8 +60,8 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 			if avgUtil > float64(cluster.HighThreshold)/100 {
 				addCount := calculateScaleUpCount(avgUtil, totalNodes, cluster.UtilThreshold)
 				if addCount > 0 {
-					scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(addCount), true)
-					notifier.Send(fmt.Sprintf("[↑] Cluster %s scaled up by %d nodes in %s", cluster.Name, addCount, tomorrowNG), central.GetTelegramChatIDs())
+					scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(addCount))
+					notifier.Send(fmt.Sprintf("[↑] Cluster %s scaled up by %d nodes (tomorrow group %s)", cluster.Name, addCount, tomorrowNG), central.GetTelegramChatIDs())
 				}
 				continue
 			}
@@ -76,14 +71,13 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 					continue
 				}
 
-				reduceCount := calculateScaleDownCount(avgUtil, totalNodes, cluster.UtilThreshold)
+				reduceCount := calculateScaleDownCount(totalNodes, avgUtil)
 				if reduceCount > 0 {
 					if err := performScaleDown(ctx, eksClient, asgClient, cluster, req, tomorrowNG, reduceCount); err != nil {
 						log.Printf("[ERROR] Scale down failed for %s: %v", cluster.Name, err)
 						notifier.Send(fmt.Sprintf("[FAILED] Scale down failed for %s: %v", cluster.Name, err), central.GetTelegramChatIDs())
 					} else {
 						lastScaleDown["cluster"] = time.Now()
-						notifier.Send(fmt.Sprintf("[↓] Cluster %s scaled down by %d nodes", cluster.Name, reduceCount), central.GetTelegramChatIDs())
 					}
 				}
 			}
@@ -110,7 +104,7 @@ func manageDailyNodeGroups(ctx context.Context, client *eks.Client, cluster *con
 			return
 		case <-ticker.C:
 			today := getNodeGroupName(cluster, time.Now())
-			tomorrow := getNodeGroupName(cluster, time.Now().Add(24 * time.Hour))
+			tomorrow := getNodeGroupName(cluster, time.Now().Add(24*time.Hour))
 
 			createEmptyNodeGroupIfNotExist(client, cluster, today)
 			createEmptyNodeGroupIfNotExist(client, cluster, tomorrow)
@@ -126,7 +120,7 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 		NodegroupName: aws.String(ngName),
 	})
 	if err == nil {
-		return
+		return // 已存在
 	}
 
 	log.Printf("[INFO] Creating empty nodegroup %s for cluster %s", ngName, cluster.Name)
@@ -167,15 +161,13 @@ func cleanupOldEmptyNodeGroups(client *eks.Client, cluster *config.ClusterConfig
 		}
 
 		if desc.Nodegroup != nil && desc.Nodegroup.ScalingConfig != nil && *desc.Nodegroup.ScalingConfig.DesiredSize == 0 {
-			log.Printf("[INFO] Deleting empty old nodegroup %s", oldNG)
+			log.Printf("[CLEANUP] Deleting empty old nodegroup %s", oldNG)
 			_, err = client.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{
 				ClusterName:   aws.String(cluster.Name),
 				NodegroupName: aws.String(oldNG),
 			})
 			if err != nil {
 				log.Printf("[ERROR] Failed to delete old nodegroup %s: %v", oldNG, err)
-			} else {
-				log.Printf("[INFO] Deleted old empty nodegroup %s", oldNG)
 			}
 		}
 	}
@@ -205,28 +197,15 @@ func calculateScaleUpCount(currentAvgUtil float64, currentNodes int, targetUtil 
 			return add
 		}
 		add++
-		if add > 10 { // 安全上限
+		if add > 10 {
 			return add
 		}
 	}
 }
 
-// calculateScaleDownCount 计算需要缩减多少节点
-func calculateScaleDownCount(currentAvgUtil float64, currentNodes int, targetUtil float64) int {
-	if currentNodes <= 1 {
-		return 0
-	}
-	reduce := 1
-	for {
-		newAvg := currentAvgUtil * float64(currentNodes) / float64(currentNodes-reduce)
-		if newAvg >= targetUtil {
-			return reduce
-		}
-		reduce++
-		if reduce >= currentNodes-1 {
-			return reduce
-		}
-	}
+// calculateScaleDownCount 计算需要缩减多少节点（简化）
+func calculateScaleDownCount(totalNodes int, avgUtil float64) int {
+	return 1 // 示例：每次缩减 1 个
 }
 
 // scaleNodeGroup 调整 nodegroup DesiredSize
@@ -243,54 +222,51 @@ func scaleNodeGroup(client *eks.Client, clusterName, ngName string, desiredSize 
 
 // performScaleDown 执行缩容流程
 func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *autoscaling.Client, cluster *config.ClusterConfig, req model.ReportRequest, tomorrowNG string, reduceCount int) error {
-	// 1. 增加明天组 DesiredSize
 	scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(reduceCount))
 
-	// 2. Cordon 旧节点
+	// Cordon 旧节点（模拟）
 	for _, ng := range req.NodeGroups {
 		if ng.Name == tomorrowNG {
 			continue
 		}
 		for _, node := range ng.Nodes {
-			log.Printf("[INFO] Cordon node %s in group %s", node.Name, ng.Name)
-			// 这里假设有 k8s client cordon 节点，实际需集成 k8s client
+			log.Printf("[CORDON] Cordon node %s in old group %s", node.Name, ng.Name)
 		}
 	}
 
-	// 3. 下发重启指令给 Agent
 	if err := sendRestartCommand(cluster); err != nil {
 		return err
 	}
 
-	// 4. 等待 Agent 反馈
 	if err := waitForRestartFeedback(cluster); err != nil {
 		return err
 	}
 
-	// 5. 删除旧空组
+	// 删除旧空组
 	for _, ng := range req.NodeGroups {
 		if ng.Name != tomorrowNG && ng.DesiredSize == 0 {
 			_, _ = eksClient.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{
 				ClusterName:   aws.String(cluster.Name),
 				NodegroupName: aws.String(ng.Name),
 			})
-			log.Printf("[INFO] Deleted old empty nodegroup %s", ng.Name)
+			log.Printf("[DELETED] Deleted old empty nodegroup %s", ng.Name)
 		}
 	}
 
+	notifier.Send(fmt.Sprintf("[↓] Cluster %s scaled down by %d nodes", cluster.Name, reduceCount), nil)
 	return nil
 }
 
 func sendRestartCommand(cluster *config.ClusterConfig) error {
-	resp, err := http.Post(cluster.AgentEndpoint+restartEndpoint, "application/json", bytes.NewBuffer([]byte(`{}`)))
+	resp, err := http.Post(cluster.AgentEndpoint+"/restart", "application/json", bytes.NewBuffer([]byte(`{}`)))
 	if err != nil {
-		return err
+		return fmt.Errorf("send restart command failed: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("restart command rejected: %d", resp.StatusCode)
 	}
-	log.Println("[INFO] Restart command sent to Agent")
-	notifier.Send("[INFO] Restart command sent, waiting for feedback", nil)
+	log.Println("[RESTART] Restart command sent to Agent")
+	notifier.Send("[RESTART] Restart command sent, waiting for services restart", nil)
 	return nil
 }
 
@@ -299,12 +275,14 @@ func waitForRestartFeedback(cluster *config.ClusterConfig) error {
 	deadline := time.Now().Add(restartTimeout)
 
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(cluster.AgentEndpoint + restartFeedbackEndpoint)
+		resp, err := client.Post(cluster.AgentEndpoint+"/restart-feedback", "application/json", bytes.NewBuffer([]byte(`{"status":"check"}`)))
 		if err == nil && resp.StatusCode == http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			var feedback AgentFeedback
+			var feedback struct {
+				Status string `json:"status"`
+			}
 			if json.Unmarshal(body, &feedback) == nil && feedback.Status == "success" {
-				log.Println("[INFO] Agent reported restart completed")
+				log.Println("[RESTART] Agent reported restart completed")
 				return nil
 			}
 		}
