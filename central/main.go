@@ -18,11 +18,11 @@ import (
 	"central/processor"
 	"central/server"
 	"central/storage"
-	"central/telegramlistener" // ← 正确导入，不用别名
+	"central/telegramlistener" // Imported normally, no alias
 )
 
 func main() {
-	// 使用所有 CPU 核
+	// Use all CPU cores
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	configFile := "config.yaml"
@@ -35,29 +35,29 @@ func main() {
 		log.Fatalf("[FATAL] Failed to load config %s: %v", configFile, err)
 	}
 
-	// 配置校验
+	// Config validation
 	if err := validateConfig(cfg); err != nil {
 		log.Fatalf("[FATAL] Config validation failed: %v", err)
 	}
 	log.Println("[INFO] Config loaded and validated successfully")
 
-	// 初始化 Telegram 通知
+	// Initialize Telegram notifier
 	if err := notifier.Init(cfg); err != nil {
 		log.Printf("[WARN] Telegram init failed: %v (notifications disabled)", err)
 	} else {
 		log.Println("[INFO] Telegram notifier initialized")
 	}
 
-	// 初始化 MongoDB
+	// Initialize MongoDB
 	if err := storage.InitMongo(cfg); err != nil {
 		log.Fatalf("[FATAL] MongoDB initialization failed: %v", err)
 	}
 	log.Println("[INFO] MongoDB initialized for all clusters")
 
-	// 创建核心实例
+	// Create core instance
 	central := core.New(cfg)
 
-	// 启动时检查并创建当天和明天空 nodegroup
+	// Initial daily nodegroup check
 	log.Println("[INFO] Performing initial daily nodegroup check...")
 	for i := range cfg.Accounts {
 		acct := &cfg.Accounts[i]
@@ -68,23 +68,23 @@ func main() {
 	}
 	log.Println("[INFO] Initial daily nodegroup check completed")
 
-	// 上下文用于优雅关闭
+	// Context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
-	// 启动 Telegram 反馈监听
+	// Start Telegram feedback listener (using the correct package name)
 	if len(cfg.Telegram.ChatIDs) > 0 {
 		wg.Add(1)
 		go telegramlistener.StartListener(ctx, &wg, cfg.Telegram.BotToken, cfg.Telegram.ChatIDs[0], processor.HandleTelegramFeedback)
 	}
 
-	// 启动 HTTP 服务器
+	// Start HTTP server
 	if cfg.Server.HTTP.Enabled {
 		wg.Add(1)
 		go server.StartHTTP(ctx, &wg, cfg, central)
 	}
 
-	// 启动每个集群的独立处理器
+	// Start independent processors for each cluster
 	for i := range cfg.Accounts {
 		acct := &cfg.Accounts[i]
 		for j := range acct.Clusters {
@@ -96,16 +96,14 @@ func main() {
 
 	log.Println("[INFO] Central server started successfully")
 
-	// 等待中断信号
+	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	log.Println("[INFO] Shutdown signal received, initiating graceful shutdown...")
 
-	// 触发关闭
 	cancel()
 
-	// 等待所有 Goroutine 完成（最多 30 秒超时）
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
