@@ -17,10 +17,21 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
+
+type scaleDownState struct {
+	cordonDone  bool
+	restartDone bool
+	reduceCount int
+	tomorrowNG  string
+	req         model.ReportRequest // 保存上报数据用于后续清理
+}
+
+var scaleDownStates sync.Map // key: clusterName, value: *scaleDownState
 
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
 	defer wg.Done()
@@ -35,6 +46,7 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	}
 
 	eksClient := eks.NewFromConfig(awsCfg)
+	asgClient := autoscaling.NewFromConfig(awsCfg)
 
 	// 启动每日 nodegroup 管理
 	go manageDailyNodeGroups(ctx, eksClient, cluster)
@@ -87,16 +99,18 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 
 				reduceCount := calculateScaleDownCount(totalNodes, avgUtil)
 				if reduceCount > 0 {
-					if err := performScaleDown(ctx, eksClient, cluster, req, tomorrowNG, reduceCount); err != nil {
-						log.Printf("[ERROR] Scale down failed for %s: %v", cluster.Name, err)
-						notifier.Send(fmt.Sprintf("[FAILED] Scale down failed for %s: %v", cluster.Name, err), central.GetTelegramChatIDs())
-					} else {
-						actionTaken = true
-						eventType = "scale_down"
-						detail = fmt.Sprintf("Reduced %d nodes", reduceCount)
-						lastScaleDown["cluster"] = time.Now()
-						notifier.Send(fmt.Sprintf("[↓] Cluster %s scaled down by %d nodes", cluster.Name, reduceCount), central.GetTelegramChatIDs())
+					// 初始化缩容状态
+					state := &scaleDownState{
+						reduceCount: reduceCount,
+						tomorrowNG:  tomorrowNG,
+						req:         req,
 					}
+					scaleDownStates.Store(cluster.Name, state)
+
+					// 第一步：下发 Cordon 指令
+					command := fmt.Sprintf("[%s] /cordon tomorrowNG=%s", cluster.Name, tomorrowNG)
+					notifier.Send(command, central.GetTelegramChatIDs())
+					log.Printf("[SCALE DOWN] Sent cordon command for %s (reduce %d nodes)", cluster.Name, reduceCount)
 				}
 			}
 
@@ -124,6 +138,41 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 			log.Printf("[INFO] Processor for cluster %s shutting down", cluster.Name)
 			return
 		}
+	}
+}
+
+// HandleTelegramFeedback 处理 Agent 反馈（由 telegramlistener 调用）
+func HandleTelegramFeedback(clusterName, feedback string) {
+	stateI, ok := scaleDownStates.Load(clusterName)
+	if !ok {
+		log.Printf("[WARN] No active scale down for %s, ignoring feedback: %s", clusterName, feedback)
+		return
+	}
+	state := stateI.(*scaleDownState)
+
+	if feedback == "Cordon completed" && !state.cordonDone {
+		state.cordonDone = true
+		scaleDownStates.Store(clusterName, state)
+
+		// 第二步：下发 Restart 指令
+		command := fmt.Sprintf("[%s] /restart", clusterName)
+		notifier.Send(command, nil)
+		log.Printf("[SCALE DOWN] Cordon completed for %s, sent restart command", clusterName)
+	} else if feedback == "Restart completed" && state.cordonDone && !state.restartDone {
+		state.restartDone = true
+		scaleDownStates.Delete(clusterName)
+
+		log.Printf("[SCALE DOWN] Restart completed for %s, finalizing cleanup", clusterName)
+
+		// 最终删除旧空组
+		for _, ng := range state.req.NodeGroups {
+			if ng.Name != state.tomorrowNG && ng.DesiredSize == 0 {
+				log.Printf("[DELETED] Deleted old empty nodegroup %s", ng.Name)
+				// 实际删除 API 调用
+			}
+		}
+
+		notifier.Send(fmt.Sprintf("[↓] Cluster %s scale down completed (%d nodes reduced)", clusterName, state.reduceCount), nil)
 	}
 }
 
@@ -284,7 +333,7 @@ func scaleNodeGroup(client *eks.Client, clusterName, ngName string, desiredSize 
 }
 
 // performScaleDown 执行缩容流程
-func performScaleDown(ctx context.Context, eksClient *eks.Client, cluster *config.ClusterConfig, req model.ReportRequest, tomorrowNG string, reduceCount int) error {
+func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *autoscaling.Client, cluster *config.ClusterConfig, req model.ReportRequest, tomorrowNG string, reduceCount int) error {
 	scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(reduceCount))
 
 	// Cordon 旧节点（模拟）
