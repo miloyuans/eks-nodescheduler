@@ -52,9 +52,9 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 			// 存储源数据
 			if err := storage.StoreRawReport(req.ClusterName, req); err != nil {
 				log.Printf("[ERROR] Failed to store raw report for %s: %v", req.ClusterName, err)
-				continue
+			} else {
+				log.Printf("[INFO] Raw report stored for %s", req.ClusterName)
 			}
-			log.Printf("[INFO] Raw report stored for %s", req.ClusterName)
 
 			totalNodes, totalRequestCpu, totalAllocatableCpu := calculateClusterLoad(req.NodeGroups)
 
@@ -63,6 +63,7 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 				avgUtil = float64(totalRequestCpu) / float64(totalAllocatableCpu)
 			}
 
+			// 生成事件 ID 用于去重
 			eventID := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%s-%d-%.4f-%d", req.ClusterName, req.Timestamp, avgUtil, totalNodes))))
 
 			actionTaken := false
