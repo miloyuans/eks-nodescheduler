@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"agent/collector"
+	"agent/collector" // ← 新增：导入 collector 包
 	"agent/model"
 	"agent/reporter"
 
@@ -21,8 +21,10 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels" // ← 新增：导入 labels
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd" // 如果需要 out-of-cluster config
 )
 
 type AgentConfig struct {
@@ -66,9 +68,7 @@ func main() {
 
 	log.Printf("[INFO] Agent starting for cluster: %s", cfg.ClusterName)
 	log.Printf("[INFO] Central endpoint: %s", cfg.CentralEndpoint)
-	log.Printf("[INFO] Report interval: %d seconds", cfg.ReportIntervalSeconds)
 
-	// 初始化 Telegram Bot
 	bot, err := tgbotapi.NewBotAPI(cfg.Telegram.BotToken)
 	if err != nil {
 		log.Fatalf("[FATAL] Telegram bot init failed: %v", err)
@@ -92,7 +92,7 @@ func main() {
 		}
 	}()
 
-	// 启动上报处理器
+	// 上报处理器
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -105,7 +105,7 @@ func main() {
 		}
 	}()
 
-	// 启动时立即全量上报一次
+	// 启动时全量上报一次
 	log.Println("[INFO] Performing initial full collection...")
 	report, err := collector.CollectFull(cfg.ClusterName, cfg.NodeGroups)
 	if err != nil {
@@ -130,7 +130,7 @@ func main() {
 	log.Println("[INFO] Agent shutdown complete")
 }
 
-// listenTelegramCommands 监听 Telegram 群消息，收到指令执行重启
+// listenTelegramCommands 监听指令
 func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbotapi.BotAPI, clusterName string, controlChatID int64) {
 	defer wg.Done()
 
@@ -142,7 +142,6 @@ func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbota
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("[INFO] Telegram listener shutting down")
 			return
 		case update := <-updates:
 			if update.Message == nil || update.Message.Chat.ID != controlChatID {
@@ -150,9 +149,7 @@ func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbota
 			}
 
 			text := update.Message.Text
-			commandPrefix := fmt.Sprintf("[%s] /restart", clusterName)
-
-			if strings.HasPrefix(text, commandPrefix) {
+			if strings.HasPrefix(text, fmt.Sprintf("[%s] /restart", clusterName)) {
 				log.Printf("[RESTART] Received restart command for %s", clusterName)
 
 				msg := tgbotapi.NewMessage(controlChatID, fmt.Sprintf("[%s] Starting services restart...", clusterName))
