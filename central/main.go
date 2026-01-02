@@ -15,10 +15,10 @@ import (
 	"central/config"
 	"central/core"
 	"central/notifier"
-	"central/processor" // ← 新增：导入 processor 包
+	"central/processor"
 	"central/server"
 	"central/storage"
-	"central/telegramlistener" // 新增：独立监听器
+	"central/telegramlistener" // ← 正确导入，不用别名
 )
 
 func main() {
@@ -48,12 +48,6 @@ func main() {
 		log.Println("[INFO] Telegram notifier initialized")
 	}
 
-	// 启动 Telegram 反馈监听（使用全局 bot）
-	if len(cfg.Telegram.ChatIDs) > 0 {
-		wg.Add(1)
-		go telegramlistener.StartListener(ctx, &wg, cfg.Telegram.ChatIDs[0], processor.HandleTelegramFeedback)
-	}
-
 	// 初始化 MongoDB
 	if err := storage.InitMongo(cfg); err != nil {
 		log.Fatalf("[FATAL] MongoDB initialization failed: %v", err)
@@ -78,7 +72,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
-	// 启动 Telegram 反馈监听（独立包）
+	// 启动 Telegram 反馈监听
 	if len(cfg.Telegram.ChatIDs) > 0 {
 		wg.Add(1)
 		go telegramlistener.StartListener(ctx, &wg, cfg.Telegram.BotToken, cfg.Telegram.ChatIDs[0], processor.HandleTelegramFeedback)
