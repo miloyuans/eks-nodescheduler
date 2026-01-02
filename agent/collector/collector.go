@@ -5,20 +5,22 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings" // ← 新增：用于 getInstanceID 分割 ProviderID
+	"time"    // ← 新增：用于 Timestamp
 
 	"agent/model"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
 )
 
 func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest, error) {
-	// 使用 in-cluster config（Agent 运行在集群内）
-	config, err := clientcmd.BuildConfigFromFlags("", "")
+	// 使用 in-cluster config（Agent 运行在 Pod 内）
+	config, err := rest.InClusterConfig()
 	if err != nil {
-		return model.ReportRequest{}, fmt.Errorf("failed to build kubeconfig: %w", err)
+		return model.ReportRequest{}, fmt.Errorf("failed to get in-cluster config: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
@@ -31,7 +33,7 @@ func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest
 		return model.ReportRequest{}, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
-	// 按 nodegroup 分组
+	// 按 nodegroup 分组统计
 	nodeGroups := make(map[string]*model.NodeGroupData)
 
 	for _, node := range nodes.Items {
@@ -40,6 +42,7 @@ func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest
 			ngName = "unknown"
 		}
 
+		// 过滤 nodegroup
 		if len(filterNodeGroups) > 0 {
 			found := false
 			for _, filter := range filterNodeGroups {
@@ -63,7 +66,7 @@ func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest
 			nodeGroups[ngName] = ng
 		}
 
-		// 获取该节点上 Pod 请求
+		// 获取该节点上所有 Pod 的 CPU requests
 		pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
 			FieldSelector: "spec.nodeName=" + node.Name,
 		})
@@ -104,10 +107,11 @@ func Collect(clusterName string, filterNodeGroups []string) (model.ReportRequest
 	return model.ReportRequest{
 		ClusterName: clusterName,
 		NodeGroups:  ngList,
-		Timestamp:   time.Now().Unix(),
+		Timestamp:   time.Now().Unix(), // ← 使用 time
 	}, nil
 }
 
+// getInstanceID 从 ProviderID 提取 EC2 Instance ID
 func getInstanceID(node *v1.Node) string {
 	if node.Spec.ProviderID == "" {
 		return ""
