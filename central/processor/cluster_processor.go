@@ -2,13 +2,9 @@
 package processor
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"sync"
 	"time"
 
@@ -23,12 +19,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-)
-
-const (
-	restartEndpoint         = "/restart"
-	restartFeedbackEndpoint = "/restart-feedback"
-	restartTimeout          = 30 * time.Minute
 )
 
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
@@ -46,6 +36,7 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	eksClient := eks.NewFromConfig(awsCfg)
 	asgClient := autoscaling.NewFromConfig(awsCfg)
 
+	// 启动每日 nodegroup 管理
 	go manageDailyNodeGroups(ctx, eksClient, cluster)
 
 	lastScaleDown := make(map[string]time.Time)
@@ -96,10 +87,12 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	}
 }
 
+// getNodeGroupName 生成 nodegroup 名称：prefix + YYYYMMDD
 func getNodeGroupName(cluster *config.ClusterConfig, t time.Time) string {
 	return cluster.NodeGroupPrefix + t.Format("20060102")
 }
 
+// manageDailyNodeGroups 每天创建今天和明天空 nodegroup，并清理历史空组
 func manageDailyNodeGroups(ctx context.Context, client *eks.Client, cluster *config.ClusterConfig) {
 	ticker := time.NewTicker(6 * time.Hour)
 	defer ticker.Stop()
@@ -126,7 +119,7 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 		NodegroupName: aws.String(ngName),
 	})
 	if err == nil {
-		return
+		return // 已存在
 	}
 
 	log.Printf("[INFO] Creating empty nodegroup %s for cluster %s", ngName, cluster.Name)
@@ -179,6 +172,7 @@ func cleanupOldEmptyNodeGroups(client *eks.Client, cluster *config.ClusterConfig
 	}
 }
 
+// calculateClusterLoad 计算集群总节点数、总请求和总可分配 CPU
 func calculateClusterLoad(nodeGroups []model.NodeGroupData) (totalNodes int, totalRequest, totalAllocatable int64) {
 	for _, ng := range nodeGroups {
 		totalNodes += len(ng.Nodes)
@@ -190,6 +184,7 @@ func calculateClusterLoad(nodeGroups []model.NodeGroupData) (totalNodes int, tot
 	return
 }
 
+// calculateScaleUpCount 计算需要添加多少节点
 func calculateScaleUpCount(currentAvgUtil float64, currentNodes int, targetUtil float64) int {
 	if currentNodes == 0 {
 		return 1
@@ -207,10 +202,12 @@ func calculateScaleUpCount(currentAvgUtil float64, currentNodes int, targetUtil 
 	}
 }
 
+// calculateScaleDownCount 计算需要缩减多少节点（简化）
 func calculateScaleDownCount(totalNodes int, avgUtil float64) int {
-	return 1
+	return 1 // 示例：每次缩减 1 个
 }
 
+// scaleNodeGroup 调整 nodegroup DesiredSize
 func scaleNodeGroup(client *eks.Client, clusterName, ngName string, desiredSize int32) {
 	input := &eks.UpdateNodegroupConfigInput{
 		ClusterName:   aws.String(clusterName),
@@ -222,9 +219,11 @@ func scaleNodeGroup(client *eks.Client, clusterName, ngName string, desiredSize 
 	_, _ = client.UpdateNodegroupConfig(context.Background(), input)
 }
 
+// performScaleDown 执行缩容流程（简化版，实际可扩展为 Telegram 交互）
 func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *autoscaling.Client, cluster *config.ClusterConfig, req model.ReportRequest, tomorrowNG string, reduceCount int) error {
 	scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(reduceCount))
 
+	// Cordon 旧节点（模拟）
 	for _, ng := range req.NodeGroups {
 		if ng.Name == tomorrowNG {
 			continue
@@ -234,58 +233,8 @@ func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *aut
 		}
 	}
 
-	if err := sendRestartCommand(cluster); err != nil {
-		return err
-	}
-
-	if err := waitForRestartFeedback(cluster); err != nil {
-		return err
-	}
-
-	for _, ng := range req.NodeGroups {
-		if ng.Name != tomorrowNG && ng.DesiredSize == 0 {
-			_, _ = eksClient.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{
-				ClusterName:   aws.String(cluster.Name),
-				NodegroupName: aws.String(ng.Name),
-			})
-			log.Printf("[DELETED] Deleted old empty nodegroup %s", ng.Name)
-		}
-	}
+	// 这里可以扩展为 Telegram 下发重启指令
 
 	notifier.Send(fmt.Sprintf("[↓] Cluster %s scaled down by %d nodes", cluster.Name, reduceCount), nil)
 	return nil
-}
-
-func sendRestartCommand(cluster *config.ClusterConfig) error {
-	resp, err := http.Post(cluster.AgentEndpoint+restartEndpoint, "application/json", bytes.NewBuffer([]byte(`{}`)))
-	if err != nil {
-		return fmt.Errorf("send restart command failed: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("restart command rejected: %d", resp.StatusCode)
-	}
-	log.Println("[RESTART] Restart command sent to Agent")
-	notifier.Send("[RESTART] Restart command sent, waiting for services restart", nil)
-	return nil
-}
-
-func waitForRestartFeedback(cluster *config.ClusterConfig) error {
-	client := &http.Client{Timeout: 10 * time.Second}
-	deadline := time.Now().Add(restartTimeout)
-
-	for time.Now().Before(deadline) {
-		resp, err := client.Post(cluster.AgentEndpoint+restartFeedbackEndpoint, "application/json", bytes.NewBuffer([]byte(`{"status":"check"}`)))
-		if err == nil && resp.StatusCode == http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			var feedback struct {
-				Status string `json:"status"`
-			}
-			if json.Unmarshal(body, &feedback) == nil && feedback.Status == "success" {
-				log.Println("[RESTART] Agent reported restart completed")
-				return nil
-			}
-		}
-		time.Sleep(30 * time.Second)
-	}
-	return fmt.Errorf("timeout waiting for agent restart feedback")
 }
