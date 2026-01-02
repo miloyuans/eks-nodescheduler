@@ -23,6 +23,16 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
+type scaleDownState struct {
+	cordonDone  bool
+	restartDone bool
+	reduceCount int
+	tomorrowNG  string
+	req         model.ReportRequest
+}
+
+var scaleDownStates sync.Map // key: clusterName, value: *scaleDownState
+
 func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Central, acct config.AccountConfig, cluster *config.ClusterConfig) {
 	defer wg.Done()
 
@@ -38,7 +48,6 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 	eksClient := eks.NewFromConfig(awsCfg)
 	asgClient := autoscaling.NewFromConfig(awsCfg)
 
-	// 启动每日 nodegroup 管理
 	go manageDailyNodeGroups(ctx, eksClient, cluster)
 
 	lastScaleDown := make(map[string]time.Time)
@@ -49,11 +58,8 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 		case req := <-ch:
 			log.Printf("[INFO] Received report from cluster %s with %d nodegroups", req.ClusterName, len(req.NodeGroups))
 
-			// 存储源数据
 			if err := storage.StoreRawReport(req.ClusterName, req); err != nil {
 				log.Printf("[ERROR] Failed to store raw report for %s: %v", req.ClusterName, err)
-			} else {
-				log.Printf("[INFO] Raw report stored for %s", req.ClusterName)
 			}
 
 			totalNodes, totalRequestCpu, totalAllocatableCpu := calculateClusterLoad(req.NodeGroups)
@@ -63,7 +69,6 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 				avgUtil = float64(totalRequestCpu) / float64(totalAllocatableCpu)
 			}
 
-			// 生成事件 ID 用于去重
 			eventID := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%s-%d-%.4f-%d", req.ClusterName, req.Timestamp, avgUtil, totalNodes))))
 
 			actionTaken := false
@@ -89,20 +94,19 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 
 				reduceCount := calculateScaleDownCount(totalNodes, avgUtil)
 				if reduceCount > 0 {
-					if err := performScaleDown(ctx, eksClient, asgClient, cluster, req, tomorrowNG, reduceCount); err != nil {
-						log.Printf("[ERROR] Scale down failed for %s: %v", cluster.Name, err)
-						notifier.Send(fmt.Sprintf("[FAILED] Scale down failed for %s: %v", cluster.Name, err), central.GetTelegramChatIDs())
-					} else {
-						actionTaken = true
-						eventType = "scale_down"
-						detail = fmt.Sprintf("Reduced %d nodes", reduceCount)
-						lastScaleDown["cluster"] = time.Now()
-						notifier.Send(fmt.Sprintf("[↓] Cluster %s scaled down by %d nodes", cluster.Name, reduceCount), central.GetTelegramChatIDs())
+					state := &scaleDownState{
+						reduceCount: reduceCount,
+						tomorrowNG:  tomorrowNG,
+						req:         req,
 					}
+					scaleDownStates.Store(cluster.Name, state)
+
+					command := fmt.Sprintf("[%s] /cordon tomorrowNG=%s", cluster.Name, tomorrowNG)
+					notifier.Send(command, central.GetTelegramChatIDs())
+					log.Printf("[SCALE DOWN] Sent cordon command for %s (reduce %d nodes)", cluster.Name, reduceCount)
 				}
 			}
 
-			// 如果有操作，存储事件（去重）
 			if actionTaken {
 				if storage.EventExists(req.ClusterName, eventID) {
 					log.Printf("[INFO] Duplicate event skipped for %s (ID: %s)", req.ClusterName, eventID)
@@ -116,8 +120,6 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 					}
 					if err := storage.StoreEvent(req.ClusterName, event); err != nil {
 						log.Printf("[ERROR] Failed to store event for %s: %v", req.ClusterName, err)
-					} else {
-						log.Printf("[INFO] Event stored for %s (ID: %s)", req.ClusterName, eventID)
 					}
 				}
 			}
@@ -126,6 +128,39 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 			log.Printf("[INFO] Processor for cluster %s shutting down", cluster.Name)
 			return
 		}
+	}
+}
+
+// HandleTelegramFeedback 处理 Agent 反馈（由 telegramlistener 调用）
+func HandleTelegramFeedback(clusterName, feedback string) {
+	stateI, ok := scaleDownStates.Load(clusterName)
+	if !ok {
+		log.Printf("[INFO] No active scale down for %s, ignoring feedback: %s", clusterName, feedback)
+		return
+	}
+	state := stateI.(*scaleDownState)
+
+	if feedback == "Cordon completed" && !state.cordonDone {
+		state.cordonDone = true
+		scaleDownStates.Store(clusterName, state)
+
+		command := fmt.Sprintf("[%s] /restart", clusterName)
+		notifier.Send(command, nil)
+		log.Printf("[SCALE DOWN] Cordon completed for %s, sent restart command", clusterName)
+	} else if feedback == "Restart completed" && state.cordonDone && !state.restartDone {
+		state.restartDone = true
+		scaleDownStates.Delete(clusterName)
+
+		log.Printf("[SCALE DOWN] Restart completed for %s, finalizing cleanup", clusterName)
+		// 最终删除旧空组
+		for _, ng := range state.req.NodeGroups {
+			if ng.Name != state.tomorrowNG && ng.DesiredSize == 0 {
+				// 删除逻辑（简化）
+				log.Printf("[DELETED] Would delete old empty nodegroup %s", ng.Name)
+			}
+		}
+
+		notifier.Send(fmt.Sprintf("[↓] Cluster %s scale down completed (%d nodes reduced)", clusterName, state.reduceCount), nil)
 	}
 }
 

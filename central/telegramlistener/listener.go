@@ -12,23 +12,19 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// FeedbackHandler 处理 Agent 反馈的回调函数
+// FeedbackHandler 定义反馈处理回调
 type FeedbackHandler func(clusterName, feedback string)
 
-var handler FeedbackHandler
-
-// Init 启动 Telegram 监听
-func Init(ctx context.Context, wg *sync.WaitGroup, botToken string, controlChatID int64, h FeedbackHandler) {
+// StartListener 启动 Telegram 监听
+func StartListener(ctx context.Context, wg *sync.WaitGroup, botToken string, controlChatID int64, handler FeedbackHandler) {
 	defer wg.Done()
-
-	handler = h
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Printf("[ERROR] Telegram bot init failed: %v", err)
 		return
 	}
-	log.Printf("[INFO] Telegram feedback listener started (chat ID: %d)", controlChatID)
+	log.Printf("[INFO] Telegram feedback listener started for chat ID %d", controlChatID)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -51,9 +47,7 @@ func Init(ctx context.Context, wg *sync.WaitGroup, botToken string, controlChatI
 				if len(parts) >= 2 {
 					clusterName := strings.Trim(parts[0], "[]")
 					feedback := strings.Join(parts[1:], " ")
-					if handler != nil {
-						handler(clusterName, feedback)
-					}
+					handler(clusterName, feedback)
 				}
 			}
 		}
