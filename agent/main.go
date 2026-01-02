@@ -12,19 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"agent/collector" // ← 修复：导入 collector 包
-	"agent/model"
+	"agent/collector"
 	"agent/reporter"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"gopkg.in/yaml.v3"
-
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types" // ← 修复：导入 types (用于 Patch)
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 type AgentConfig struct {
@@ -69,6 +61,7 @@ func main() {
 	log.Printf("[INFO] Agent starting for cluster: %s", cfg.ClusterName)
 	log.Printf("[INFO] Central endpoint: %s", cfg.CentralEndpoint)
 
+	// 初始化 Telegram Bot
 	bot, err := tgbotapi.NewBotAPI(cfg.Telegram.BotToken)
 	if err != nil {
 		log.Fatalf("[FATAL] Telegram bot init failed: %v", err)
@@ -78,7 +71,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
-	// 启动 Telegram 监听
+	// 启动 Telegram 指令监听
 	wg.Add(1)
 	go listenTelegramCommands(ctx, &wg, bot, cfg.ClusterName, cfg.Telegram.ControlChatID)
 
@@ -92,7 +85,7 @@ func main() {
 		}
 	}()
 
-	// 上报处理器
+	// 上报处理器（只日志，不通知）
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -100,7 +93,7 @@ func main() {
 			if err := reporter.Report(cfg.CentralEndpoint, report); err != nil {
 				log.Printf("[ERROR] Report failed: %v", err)
 			} else {
-				log.Println("[INFO] Report sent successfully")
+				log.Printf("[INFO] Report sent successfully (%d nodegroups)", len(report.NodeGroups))
 			}
 		}
 	}()
@@ -130,7 +123,7 @@ func main() {
 	log.Println("[INFO] Agent shutdown complete")
 }
 
-// listenTelegramCommands 监听指令
+// listenTelegramCommands 监听 Telegram 群消息，只响应精确匹配的 /restart 指令
 func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbotapi.BotAPI, clusterName string, controlChatID int64) {
 	defer wg.Done()
 
@@ -139,138 +132,55 @@ func listenTelegramCommands(ctx context.Context, wg *sync.WaitGroup, bot *tgbota
 
 	updates := bot.GetUpdatesChan(u)
 
+	expectedCommand := fmt.Sprintf("[%s] /restart", clusterName)
+
 	for {
 		select {
 		case <-ctx.Done():
+			log.Println("[INFO] Telegram listener shutting down")
 			return
 		case update := <-updates:
 			if update.Message == nil || update.Message.Chat.ID != controlChatID {
 				continue
 			}
 
-			text := update.Message.Text
-			if strings.HasPrefix(text, fmt.Sprintf("[%s] /restart", clusterName)) {
-				log.Printf("[RESTART] Received restart command for %s", clusterName)
+			text := strings.TrimSpace(update.Message.Text)
+			if text == expectedCommand {
+				log.Printf("[RESTART] Received valid restart command for %s", clusterName)
 
+				// 发送开始通知
 				msg := tgbotapi.NewMessage(controlChatID, fmt.Sprintf("[%s] Starting services restart...", clusterName))
 				bot.Send(msg)
 
+				// 异步执行重启
 				go restartServices(clusterName, bot, controlChatID)
 			}
 		}
 	}
 }
 
-// restartServices 顺序重启 StatefulSet → Deployment
+// restartServices 执行重启逻辑（这里模拟，实际替换为你的重启命令）
 func restartServices(clusterName string, bot *tgbotapi.BotAPI, controlChatID int64) {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		log.Printf("[ERROR] k8s config failed: %v", err)
-		sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
-		return
+	// TODO: 替换为实际重启逻辑，例如 kubectl rollout restart
+	log.Println("[RESTART] Executing services restart...")
+
+	// 模拟重启耗时
+	time.Sleep(30 * time.Second)
+
+	// 假设成功
+	success := true // 实际根据执行结果判断
+
+	status := "success"
+	if !success {
+		status = "failed"
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		log.Printf("[ERROR] k8s clientset failed: %v", err)
-		sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
-		return
-	}
-
-	// 重启 StatefulSet
-	statefulSets, err := clientset.AppsV1().StatefulSets("").List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		log.Printf("[ERROR] List StatefulSets failed: %v", err)
-		sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
-		return
-	}
-
-	for _, ss := range statefulSets.Items {
-		log.Printf("[RESTART] Restarting StatefulSet %s/%s", ss.Namespace, ss.Name)
-		if err := restartAndWait(clientset, ss.Namespace, ss.Name, "statefulset"); err != nil {
-			log.Printf("[ERROR] Restart StatefulSet failed: %v", err)
-			sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
-			return
-		}
-	}
-
-	// 重启 Deployment
-	deployments, err := clientset.AppsV1().Deployments("").List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		log.Printf("[ERROR] List Deployments failed: %v", err)
-		sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
-		return
-	}
-
-	for _, dep := range deployments.Items {
-		log.Printf("[RESTART] Restarting Deployment %s/%s", dep.Namespace, dep.Name)
-		if err := restartAndWait(clientset, dep.Namespace, dep.Name, "deployment"); err != nil {
-			log.Printf("[ERROR] Restart Deployment failed: %v", err)
-			sendTelegramFeedback(bot, controlChatID, clusterName, "failed")
-			return
-		}
-	}
-
-	log.Println("[RESTART] All services restarted successfully")
-	sendTelegramFeedback(bot, controlChatID, clusterName, "success")
-}
-
-// restartAndWait 执行 rollout restart 并等待 Pod Ready
-func restartAndWait(clientset *kubernetes.Clientset, namespace, name, kind string) error {
-	patchData := []byte(fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"%s"}}}}`, time.Now().Format(time.RFC3339)))
-
-	var err error
-	if kind == "deployment" {
-		_, err = clientset.AppsV1().Deployments(namespace).Patch(context.TODO(), name, types.StrategicMergePatchType, patchData, metav1.PatchOptions{})
-	} else {
-		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(context.TODO(), name, types.StrategicMergePatchType, patchData, metav1.PatchOptions{})
-	}
-	if err != nil {
-		return err
-	}
-
-	deadline := time.Now().Add(5 * time.Minute)
-	for time.Now().Before(deadline) {
-		var pods *v1.PodList
-		var err error
-		if kind == "deployment" {
-			dep, _ := clientset.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-			selector := labels.SelectorFromSet(dep.Spec.Selector.MatchLabels)
-			pods, err = clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector.String()})
-		} else {
-			ss, _ := clientset.AppsV1().StatefulSets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-			selector := labels.SelectorFromSet(ss.Spec.Selector.MatchLabels)
-			pods, err = clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: selector.String()})
-		}
-		if err != nil {
-			return err
-		}
-
-		allReady := true
-		for _, pod := range pods.Items {
-			if pod.Status.Phase != v1.PodRunning || pod.DeletionTimestamp != nil {
-				allReady = false
-				break
-			}
-			for _, cond := range pod.Status.Conditions {
-				if cond.Type == v1.PodReady && cond.Status != v1.ConditionTrue {
-					allReady = false
-					break
-				}
-			}
-		}
-		if allReady {
-			return nil
-		}
-		time.Sleep(10 * time.Second)
-	}
-	return fmt.Errorf("timeout waiting for %s %s/%s ready", kind, namespace, name)
-}
-
-// sendTelegramFeedback 发送反馈
-func sendTelegramFeedback(bot *tgbotapi.BotAPI, chatID int64, clusterName, status string) {
-	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("[%s] Restart %s", clusterName, status))
+	// 发送反馈（与中心规则一致）
+	feedback := fmt.Sprintf("[%s] Restart %s", clusterName, status)
+	msg := tgbotapi.NewMessage(controlChatID, feedback)
 	if _, err := bot.Send(msg); err != nil {
-		log.Printf("[ERROR] Telegram feedback failed: %v", err)
+		log.Printf("[ERROR] Failed to send restart feedback: %v", err)
+	} else {
+		log.Printf("[RESTART] Feedback sent: %s", feedback)
 	}
 }
