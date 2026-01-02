@@ -3,6 +3,7 @@ package processor
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"log"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"central/core"
 	"central/model"
 	"central/notifier"
+	"central/storage"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
