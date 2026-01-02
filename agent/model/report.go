@@ -9,10 +9,6 @@ type ReportRequest struct {
 
 type NodeGroupData struct {
 	Name        string            `json:"name"`
-	AsgName     string            `json:"asg_name"` // 可留空，中心不使用
-	MinSize     int32             `json:"min_size"` // 可留空
-	MaxSize     int32             `json:"max_size"` // 可留空
-	DesiredSize int32             `json:"desired_size"` // 可留空
 	NodeUtils   map[string]float64 `json:"node_utils"`
 	Nodes       []NodeInfo        `json:"nodes"`
 }
