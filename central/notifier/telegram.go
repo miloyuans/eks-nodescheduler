@@ -26,6 +26,12 @@ func Init(cfg *config.GlobalConfig) error {
 	return nil
 }
 
+// GetBot 返回全局 bot 实例（供监听器使用）
+func GetBot() *tgbotapi.BotAPI {
+	return bot
+}
+
+// Send 发送消息
 func Send(message string, chatIDs []int64) {
 	if bot == nil || len(chatIDs) == 0 {
 		log.Printf("[DEBUG] Telegram notification skipped: %s", message)

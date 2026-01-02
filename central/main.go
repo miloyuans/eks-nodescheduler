@@ -48,6 +48,12 @@ func main() {
 		log.Println("[INFO] Telegram notifier initialized")
 	}
 
+	// 启动 Telegram 反馈监听（使用全局 bot）
+	if len(cfg.Telegram.ChatIDs) > 0 {
+		wg.Add(1)
+		go telegramlistener.StartListener(ctx, &wg, cfg.Telegram.ChatIDs[0], processor.HandleTelegramFeedback)
+	}
+
 	// 初始化 MongoDB
 	if err := storage.InitMongo(cfg); err != nil {
 		log.Fatalf("[FATAL] MongoDB initialization failed: %v", err)

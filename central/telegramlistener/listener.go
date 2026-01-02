@@ -1,53 +1,49 @@
-// central/telegramlistener/listener.go
-package telegramlistener
+// central/notifier/telegram.go
+package notifier
 
 import (
-	"context"
 	"log"
-	"strings"
-	"sync"
 
+	"central/config"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// FeedbackHandler 定义反馈处理回调
-type FeedbackHandler func(clusterName, feedback string)
+var bot *tgbotapi.BotAPI
 
-// StartListener 启动 Telegram 监听
-func StartListener(ctx context.Context, wg *sync.WaitGroup, botToken string, controlChatID int64, handler FeedbackHandler) {
-	defer wg.Done()
+func Init(cfg *config.GlobalConfig) error {
+	if cfg.Telegram.BotToken == "" {
+		log.Println("[WARN] Telegram BotToken empty, notification disabled")
+		return nil
+	}
 
-	bot, err := tgbotapi.NewBotAPI(botToken)
+	var err error
+	bot, err = tgbotapi.NewBotAPI(cfg.Telegram.BotToken)
 	if err != nil {
-		log.Printf("[ERROR] Telegram bot init failed: %v", err)
+		return err
+	}
+
+	log.Printf("[INFO] Telegram bot authorized as @%s", bot.Self.UserName)
+	return nil
+}
+
+// GetBot 返回全局 bot 实例（供监听器使用）
+func GetBot() *tgbotapi.BotAPI {
+	return bot
+}
+
+// Send 发送消息
+func Send(message string, chatIDs []int64) {
+	if bot == nil || len(chatIDs) == 0 {
+		log.Printf("[DEBUG] Telegram notification skipped: %s", message)
 		return
 	}
-	log.Printf("[INFO] Telegram feedback listener started for chat ID %d", controlChatID)
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	for _, chatID := range chatIDs {
+		msg := tgbotapi.NewMessage(chatID, message)
+		msg.ParseMode = tgbotapi.ModeMarkdown
 
-	updates := bot.GetUpdatesChan(u)
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("[INFO] Telegram feedback listener shutting down")
-			return
-		case update := <-updates:
-			if update.Message == nil || update.Message.Chat.ID != controlChatID {
-				continue
-			}
-
-			text := strings.TrimSpace(update.Message.Text)
-			if strings.HasSuffix(text, "Cordon completed") || strings.HasSuffix(text, "Restart completed") {
-				parts := strings.Split(text, " ")
-				if len(parts) >= 2 {
-					clusterName := strings.Trim(parts[0], "[]")
-					feedback := strings.Join(parts[1:], " ")
-					handler(clusterName, feedback)
-				}
-			}
+		if _, err := bot.Send(msg); err != nil {
+			log.Printf("[ERROR] Telegram send failed to %d: %v", chatID, err)
 		}
 	}
 }
