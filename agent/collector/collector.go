@@ -15,7 +15,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache" // ← 正确导入 cache
 )
 
 var reportChan chan model.ReportRequest
