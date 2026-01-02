@@ -3,8 +3,10 @@ package processor
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"central/core"
 	"central/model"
 	"central/notifier"
+	"central/storage"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -47,8 +50,14 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 		case req := <-ch:
 			log.Printf("[INFO] Received report from cluster %s with %d nodegroups", req.ClusterName, len(req.NodeGroups))
 
-			tomorrowNG := getNodeGroupName(cluster, time.Now().Add(24*time.Hour))
+			// 存储源数据
+			if err := storage.StoreRawReport(req.ClusterName, req); err != nil {
+				log.Printf("[ERROR] Failed to store raw report for %s: %v", req.ClusterName, err)
+				continue
+			}
+			log.Printf("[INFO] Raw report stored for %s", req.ClusterName)
 
+			// 计算指标
 			totalNodes, totalRequestCpu, totalAllocatableCpu := calculateClusterLoad(req.NodeGroups)
 
 			avgUtil := 0.0
@@ -56,17 +65,27 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 				avgUtil = float64(totalRequestCpu) / float64(totalAllocatableCpu)
 			}
 
+			// 生成事件 ID 用于去重
+			eventID := generateEventID(req.ClusterName, req.Timestamp, avgUtil, totalNodes)
+
+			actionTaken := false
+			eventType := ""
+			detail := ""
+
+			tomorrowNG := getNodeGroupName(cluster, time.Now().Add(24*time.Hour))
+
 			if avgUtil > float64(cluster.HighThreshold)/100 {
 				addCount := calculateScaleUpCount(avgUtil, totalNodes, cluster.UtilThreshold)
 				if addCount > 0 {
 					scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(addCount))
+					actionTaken = true
+					eventType = "scale_up"
+					detail = fmt.Sprintf("Added %d nodes to tomorrow group %s", addCount, tomorrowNG)
 					notifier.Send(fmt.Sprintf("[↑] Cluster %s scaled up by %d nodes (tomorrow group %s)", cluster.Name, addCount, tomorrowNG), central.GetTelegramChatIDs())
 				}
-				continue
-			}
-
-			if avgUtil < float64(cluster.LowThreshold)/100 {
+			} else if avgUtil < float64(cluster.LowThreshold)/100 {
 				if time.Since(lastScaleDown["cluster"]) < time.Duration(cluster.CooldownSeconds)*time.Second {
+					log.Printf("[INFO] Scale down cooldown active for %s", cluster.Name)
 					continue
 				}
 
@@ -76,15 +95,47 @@ func ProcessCluster(ctx context.Context, wg *sync.WaitGroup, central *core.Centr
 						log.Printf("[ERROR] Scale down failed for %s: %v", cluster.Name, err)
 						notifier.Send(fmt.Sprintf("[FAILED] Scale down failed for %s: %v", cluster.Name, err), central.GetTelegramChatIDs())
 					} else {
+						actionTaken = true
+						eventType = "scale_down"
+						detail = fmt.Sprintf("Reduced %d nodes", reduceCount)
 						lastScaleDown["cluster"] = time.Now()
+						notifier.Send(fmt.Sprintf("[↓] Cluster %s scaled down by %d nodes", cluster.Name, reduceCount), central.GetTelegramChatIDs())
 					}
 				}
 			}
+
+			// 如果有操作，存储事件（去重）
+			if actionTaken {
+				if storage.EventExists(req.ClusterName, eventID) {
+					log.Printf("[INFO] Duplicate event skipped for %s (ID: %s)", req.ClusterName, eventID)
+				} else {
+					event := model.EventRecord{
+						ClusterName: req.ClusterName,
+						Timestamp:   req.Timestamp,
+						Type:        eventType,
+						Detail:      detail,
+						EventID:     eventID,
+					}
+					if err := storage.StoreEvent(req.ClusterName, event); err != nil {
+						log.Printf("[ERROR] Failed to store event for %s: %v", req.ClusterName, err)
+					} else {
+						log.Printf("[INFO] Event stored for %s (ID: %s)", req.ClusterName, eventID)
+					}
+				}
+			}
+
 		case <-ctx.Done():
 			log.Printf("[INFO] Processor for cluster %s shutting down", cluster.Name)
 			return
 		}
 	}
+}
+
+// generateEventID 生成唯一事件 ID（用于去重）
+func generateEventID(clusterName string, timestamp int64, avgUtil float64, totalNodes int) string {
+	data := fmt.Sprintf("%s-%d-%.4f-%d", clusterName, timestamp, avgUtil, totalNodes)
+	hash := md5.Sum([]byte(data))
+	return fmt.Sprintf("%x", hash)
 }
 
 // getNodeGroupName 生成 nodegroup 名称：prefix + YYYYMMDD
@@ -119,7 +170,7 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 		NodegroupName: aws.String(ngName),
 	})
 	if err == nil {
-		return // 已存在
+		return
 	}
 
 	log.Printf("[INFO] Creating empty nodegroup %s for cluster %s", ngName, cluster.Name)
@@ -133,7 +184,7 @@ func createEmptyNodeGroupIfNotExist(client *eks.Client, cluster *config.ClusterC
 		},
 		InstanceTypes: []string{cluster.InstanceType},
 		DiskSize:      aws.Int32(int32(cluster.DiskSize)),
-		AmiType:       types.AMITypes(cluster.AmiType), // 正确使用 AMITypes
+		AmiType:       types.AMITypes(cluster.AmiType),
 		NodeRole:      aws.String(cluster.IamRole),
 	}
 
@@ -204,7 +255,7 @@ func calculateScaleUpCount(currentAvgUtil float64, currentNodes int, targetUtil 
 
 // calculateScaleDownCount 计算需要缩减多少节点（简化）
 func calculateScaleDownCount(totalNodes int, avgUtil float64) int {
-	return 1 // 示例：每次缩减 1 个
+	return 1
 }
 
 // scaleNodeGroup 调整 nodegroup DesiredSize
@@ -219,7 +270,7 @@ func scaleNodeGroup(client *eks.Client, clusterName, ngName string, desiredSize 
 	_, _ = client.UpdateNodegroupConfig(context.Background(), input)
 }
 
-// performScaleDown 执行缩容流程（简化版，实际可扩展为 Telegram 交互）
+// performScaleDown 执行缩容流程
 func performScaleDown(ctx context.Context, eksClient *eks.Client, asgClient *autoscaling.Client, cluster *config.ClusterConfig, req model.ReportRequest, tomorrowNG string, reduceCount int) error {
 	scaleNodeGroup(eksClient, cluster.Name, tomorrowNG, int32(reduceCount))
 

@@ -21,7 +21,7 @@ import (
 )
 
 func main() {
-	// 并发配置：使用所有 CPU 核
+	// 使用所有 CPU 核
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	configFile := "config.yaml"
@@ -38,7 +38,6 @@ func main() {
 	if err := validateConfig(cfg); err != nil {
 		log.Fatalf("[FATAL] Config validation failed: %v", err)
 	}
-
 	log.Println("[INFO] Config loaded and validated successfully")
 
 	// 初始化 Telegram 通知
@@ -56,6 +55,17 @@ func main() {
 
 	// 创建核心实例
 	central := core.New(cfg)
+
+	// 启动时检查并创建当天和明天空 nodegroup
+	log.Println("[INFO] Performing initial daily nodegroup check...")
+	for i := range cfg.Accounts {
+		acct := &cfg.Accounts[i]
+		for j := range acct.Clusters {
+			cluster := &acct.Clusters[j]
+			processor.CheckAndCreateDailyNodeGroups(central, *acct, cluster)
+		}
+	}
+	log.Println("[INFO] Initial daily nodegroup check completed")
 
 	// 上下文用于优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
@@ -85,7 +95,6 @@ func main() {
 	<-sigCh
 	log.Println("[INFO] Shutdown signal received, initiating graceful shutdown...")
 
-	// 触发关闭
 	cancel()
 
 	// 等待所有 Goroutine 完成（最多 30 秒超时）
@@ -102,9 +111,7 @@ func main() {
 		log.Println("[WARN] Shutdown timeout, forcing exit")
 	}
 
-	// 关闭 Mongo 连接
 	storage.Shutdown()
-
 	log.Println("[INFO] Central server shutdown complete")
 }
 
@@ -131,6 +138,9 @@ func validateConfig(cfg *config.GlobalConfig) error {
 			}
 			if cluster.Region == "" {
 				return fmt.Errorf("region is required for cluster %s", cluster.Name)
+			}
+			if cluster.NodeGroupPrefix == "" {
+				return fmt.Errorf("node_group_prefix is required for cluster %s", cluster.Name)
 			}
 		}
 	}
