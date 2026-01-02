@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings" // ← 新增：用于 getInstanceID 分割 ProviderID
 	"time"
 
 	"agent/model"
@@ -14,6 +15,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 )
 
 var reportChan chan model.ReportRequest
@@ -34,6 +36,8 @@ func InitCollector(ctx context.Context, clusterName string, filterNodeGroups []s
 
 	factory := informers.NewSharedInformerFactory(clientset, 10*time.Minute)
 	nodeInformer := factory.Core().V1().Nodes().Informer()
+
+	// 正确实现 ResourceEventHandler 接口
 	nodeInformer.AddEventHandler(&nodeEventHandler{
 		clusterName:      clusterName,
 		filterNodeGroups: filterNodeGroups,
@@ -43,7 +47,7 @@ func InitCollector(ctx context.Context, clusterName string, filterNodeGroups []s
 	factory.Start(stopCh)
 	factory.WaitForCacheSync(stopCh)
 
-	log.Println("[COLLECT] Node informer started")
+	log.Println("[COLLECT] Node informer started, event-driven collection enabled")
 
 	// 阻塞直到 context 取消
 	<-ctx.Done()
@@ -51,7 +55,7 @@ func InitCollector(ctx context.Context, clusterName string, filterNodeGroups []s
 	return nil
 }
 
-// CollectFull 启动时全量采集一次
+// CollectFull 启动时全量采集一次（供 main.go 调用）
 func CollectFull(clusterName string, filterNodeGroups []string) (model.ReportRequest, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -102,7 +106,7 @@ func CollectFull(clusterName string, filterNodeGroups []string) (model.ReportReq
 		}
 
 		allocCpu := node.Status.Allocatable.Cpu().MilliValue()
-		util := 0.0 // 简化：这里可以用其他方式计算，这里用 0 占位
+		util := 0.0 // 简化：这里可以用其他指标，这里用 0 占位
 		ng.NodeUtils[node.Name] = util
 
 		ng.Nodes = append(ng.Nodes, model.NodeInfo{
@@ -125,19 +129,23 @@ func CollectFull(clusterName string, filterNodeGroups []string) (model.ReportReq
 	}, nil
 }
 
+// nodeEventHandler 实现 cache.ResourceEventHandler 接口
 type nodeEventHandler struct {
 	clusterName      string
 	filterNodeGroups []string
 }
 
-func (h *nodeEventHandler) OnAdd(obj interface{}) {
+// OnAdd 实现接口（签名必须包含 isInInitialList bool）
+func (h *nodeEventHandler) OnAdd(obj interface{}, isInInitialList bool) {
 	h.triggerReport()
 }
 
-func (h *nodeEventHandler) OnUpdate(old, new interface{}) {
+// OnUpdate 实现接口
+func (h *nodeEventHandler) OnUpdate(oldObj, newObj interface{}) {
 	h.triggerReport()
 }
 
+// OnDelete 实现接口
 func (h *nodeEventHandler) OnDelete(obj interface{}) {
 	h.triggerReport()
 }
