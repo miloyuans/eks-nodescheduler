@@ -4,7 +4,6 @@ package core
 import (
 	"encoding/json"
 	"fmt"
-	"log" // ← 新增导入 log
 	"net/http"
 
 	"central/config"
@@ -53,7 +52,7 @@ func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 检查是否匹配配置中的集群
+	// 匹配配置中的集群
 	found := false
 	for _, acct := range c.cfg.Accounts {
 		for _, cluster := range acct.Clusters {
@@ -83,14 +82,13 @@ func (c *Central) HTTPReportHandler(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case ch <- req:
-		if err := storage.StoreReport(req.ClusterName, req); err != nil {
-			log.Printf("[WARN] Failed to store report for %s: %v", req.ClusterName, err)
+		// 存储源数据
+		if err := storage.StoreRawReport(req.ClusterName, req); err != nil {
+			log.Printf("[WARN] Failed to store raw report for %s: %v", req.ClusterName, err)
 		}
 
-		notifier.Send(
-			fmt.Sprintf("[RECEIVED] Report from cluster *%s* (%d nodegroups)", req.ClusterName, len(req.NodeGroups)),
-			c.cfg.Telegram.ChatIDs,
-		)
+		// 接收成功通知（仅日志，不发 Telegram）
+		log.Printf("[INFO] Report queued for processing from %s", req.ClusterName)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
